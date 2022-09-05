@@ -1,5 +1,5 @@
 [package]
-name = "openldbws"
+name = "openldbsvws-lib"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.63"
-clap = "3.2.19"
-openldbws-lib = { path = "../openldbws-lib" }
+chrono = "0.4.22"
 reqwest = "0.11.11"
-tokio = "1.20.1"
+roxmltree = "0.15.0"

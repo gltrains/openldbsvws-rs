@@ -1,13 +1,13 @@
 use reqwest::Client;
-use clap::{AppSettings, ArgAction, Command, ErrorKind};
-use anyhow::{anyhow, Result};
+use clap::Command;
+use anyhow::Result;
 use tokio::runtime::Builder;
-use openldbws_lib::{Error, get_service_details};
+use openldbsvws_lib::{get_service_details};
 
 fn main() -> Result<()> {
-    let matches = Command::new("openldbws")
+    let matches = Command::new("openldbsvws")
         .subcommand_required(true)
-        .about("query data from openldbws")
+        .about("query data from openldbsvws")
         .version("0.1.0")
         .subcommand(
             Command::new("service")
@@ -43,4 +43,3 @@ fn main() -> Result<()> {
         _ => unreachable!()
     }
 }
-//PfFdlfnL/BRQflDm6w7KAw==

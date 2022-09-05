@@ -1,6 +1,6 @@
 [workspace]
 
 members = [
-    "openldbws-lib",
-    "openldbws"
+    "openldbsvws-lib",
+    "openldbsvws"
 ]

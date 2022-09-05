@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/trains.iml" filepath="$PROJECT_DIR$/.idea/trains.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/openldbws-rs.iml" filepath="$PROJECT_DIR$/.idea/openldbws-rs.iml" />
     </modules>
   </component>
 </project>
