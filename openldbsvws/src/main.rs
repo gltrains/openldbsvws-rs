@@ -36,7 +36,7 @@ fn main() -> Result<()> {
             let token = sub_matches.get_one::<String>("TOKEN").expect("required");
             println!("Getting information for service {}", service);
             
-            println!("{:?}", rt.block_on(get_service_details(client, token, service))?);
+            println!("{:#?}", rt.block_on(get_service_details(client, token, service))?);
 
             Ok(())
         },
