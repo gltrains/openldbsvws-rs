@@ -1,6 +1,7 @@
 use roxmltree::{Document, Node};
-use std::time::Duration;
-use std::str::FromStr;
+use core::time::Duration;
+use core::str::from_utf8;
+use core::str::FromStr;
 use core::any::type_name;
 use core::result::Result;
 use chrono::{TimeZone, DateTime, FixedOffset, NaiveDate};
@@ -24,8 +25,8 @@ macro_rules! arrival_details {
 #[derive(Debug)]
 pub struct Location {
     name: String,
-    destination_crs: Option<String>,
-    destination_tiploc: Option<String>
+    crs: Option<String>,
+    tiploc: Option<String>
 }
 
 #[derive(Debug)]
@@ -45,7 +46,7 @@ pub enum AssociationCategory {
 /// A train association.
 ///
 /// A train can join, divide, link from and link to another train.
-pub struct Association<T: TimeZone> {
+pub struct Association {
     /// The association category.
     category: AssociationCategory,
     /// A unique RTTI ID for this service that can be used to obtain full details of the service.
@@ -57,7 +58,7 @@ pub struct Association<T: TimeZone> {
     /// The Retail Service ID for this service, if known.
     rsid: Option<String>,
     /// The Scheduled Departure Date of this service.
-    sdd: DateTime<T>,
+    sdd: NaiveDate,
     /// The origin location of the associated service.
     origin: Option<Location>,
     /// The destination location of the associated service.
@@ -93,7 +94,7 @@ pub struct ServiceTime<T: TimeZone> {
 ///
 /// See [Activity Codes](https://wiki.openraildata.com//index.php?title=Activity_codes) on the
 /// Open Rail Data Wiki.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Activity {
     /// Stops to detach vehicles. (-D)
     StopDetach,
@@ -176,7 +177,9 @@ pub enum Activity {
     /// Stops for watering of coaches. (W)
     StopsForWateringOfCoaches,
     /// Passes another train at crossing point on a single line. (X)
-    PassesAnotherTrain
+    PassesAnotherTrain,
+    /// No activity.
+    None
 }
 
 #[derive(Debug)]
@@ -185,11 +188,11 @@ pub struct ServiceLocation<T: TimeZone> {
     /// The location of this stop.
     location: Location,
     /// Associations that happen at this stop.
-    associations: Option<Vec<Association<T>>>,
+    associations: Option<Vec<Association>>,
     /// Ad-hoc alerts about this stop.
     adhoc_alerts: Option<Vec<String>>,
     /// Activities that happen at this stop.
-    activity: Option<Activity>,
+    activities: Option<Vec<Activity>>,
     /// The length of the train at this stop. If None, the length is unknown.
     length: Option<u16>,
     /// Whether the front is detached at this stop.
@@ -280,6 +283,9 @@ pub enum ParsingError {
     /// An invalid forecast type. The string represents the forecast type that was found.
     #[error("invalid forecast type, expected Actual or Forecast, got {0}")]
     InvalidForecast(String),
+    /// An invalid association category type. The string represents the category that was found.
+    #[error("invalid association category, expected Join or Divide, got {0}")]
+    InvalidAssociationCategory(String),
     /// A missing field. The string represents the field that was not found.
     #[error("field {0} is missing")]
     MissingField(&'static str),
@@ -298,84 +304,91 @@ pub enum ParsingError {
     UnsupportedServiceType(String)
 }
 
-#[inline(always)]
-fn get_field_text(node: Node, name: &'static str) -> Result<String, ParsingError> {
-    let node = node.children()
-        .find(|x| x.has_tag_name(name))
-        .ok_or(ParsingError::MissingField(name))?;
+trait Traversable {
+    fn field_text(&self, name: &'static str) -> Result<String, ParsingError>;
+    fn field<T: FromStr>(&self, name: &'static str) -> Result<T, ParsingError>;
+    fn field_time(&self, name: &'static str) -> Result<DateTime<FixedOffset>, ParsingError>;
+    fn field_date(&self, name: &'static str)-> Result<NaiveDate, ParsingError>;
+    fn field_bool(&self, name: &'static str, default: bool) -> Result<bool, ParsingError>;
+}
 
-    Ok(
-        node.text()
-            .ok_or(ParsingError::InvalidField {
+impl<'a, 'b> Traversable for Node<'a, 'b> {
+    fn field_text(&self, name: &'static str) -> Result<String, ParsingError> {
+        let node = self.children()
+            .find(|x| x.has_tag_name(name))
+            .ok_or(ParsingError::MissingField(name))?;
+
+        Ok(
+            node.text()
+                .ok_or(ParsingError::InvalidField {
+                    field: name,
+                    expected: "text",
+                    found: None
+                })?
+                .to_string()
+        )
+    }
+
+    fn field<T: FromStr>(&self, name: &'static str) -> Result<T, ParsingError> {
+        let text = self.field_text(name)?;
+
+        text.parse::<T>()
+            .map_err(|_| ParsingError::InvalidField {
                 field: name,
-                expected: "text",
-                found: None
-            })?
-            .to_string()
-    )
-}
+                expected: type_name::<T>(),
+                found: Some(text)
+            })
+    }
 
-#[inline(always)]
-fn get_field<T: FromStr>(node: Node, name: &'static str) -> Result<T, ParsingError> {
-    let text = get_field_text(node, name)?;
+    fn field_time(&self, name: &'static str) -> Result<DateTime<FixedOffset>, ParsingError> {
+        let text = self.field_text(name)?;
 
-    text.parse::<T>()
-        .map_err(|_| ParsingError::InvalidField {
-            field: name,
-            expected: type_name::<T>(),
-            found: Some(text)
-        })
-}
+        DateTime::parse_from_rfc3339(&text)
+            .map_err(|_| ParsingError::InvalidField {
+                field: name,
+                expected: "DateTime",
+                found: Some(text)
+            })
+    }
 
-#[inline(always)]
-fn get_field_time(node: Node, name: &'static str) -> Result<DateTime<FixedOffset>, ParsingError> {
-    let text = get_field_text(node, name)?;
+    #[inline(always)]
+    fn field_date(&self, name: &'static str) -> Result<NaiveDate, ParsingError> {
+        let text = self.field_text(name)?;
 
-    DateTime::parse_from_rfc3339(&text)
-        .map_err(|_| ParsingError::InvalidField {
-            field: name,
-            expected: "DateTime",
-            found: Some(text)
-        })
-}
+        NaiveDate::parse_from_str(&text, "%Y-%m-%d")
+            .map_err(|_| ParsingError::InvalidField {
+                field: name,
+                expected: "NaiveDate",
+                found: Some(text)
+            })
+    }
 
-#[inline(always)]
-fn get_field_date(node: Node, name: &'static str) -> Result<NaiveDate, ParsingError> {
-    let text = get_field_text(node, name)?;
-
-    NaiveDate::parse_from_str(&text, "%Y-%m-%d")
-        .map_err(|_| ParsingError::InvalidField {
-            field: name,
-            expected: "NaiveDate",
-            found: Some(text)
-        })
-}
-
-#[inline(always)]
-fn get_field_bool(node: Node, name: &'static str, default: bool) -> Result<bool, ParsingError> {
-    match get_field_text(node, name) {
-        Ok(x) => {
-            match &*x {
-                "true" => {
-                    Ok(true)
-                },
-                "false" => {
-                    Ok(false)
-                },
-                _ => {
-                    Err(ParsingError::InvalidField {
-                        field: name,
-                        expected: "bool",
-                        found: Some(x)
-                    })
+    #[inline(always)]
+    fn field_bool(&self, name: &'static str, default: bool) -> Result<bool, ParsingError> {
+        match self.field_text(name) {
+            Ok(x) => {
+                match &*x {
+                    "true" => {
+                        Ok(true)
+                    },
+                    "false" => {
+                        Ok(false)
+                    },
+                    _ => {
+                        Err(ParsingError::InvalidField {
+                            field: name,
+                            expected: "bool",
+                            found: Some(x)
+                        })
+                    }
                 }
             }
+            Err(_) => {Ok(default)}
         }
-        Err(_) => {Ok(default)}
     }
 }
 
-fn parse_association(association: Node) -> Result<Association<FixedOffset>, ParsingError> {
+fn parse_association(association: Node) -> Result<Association, ParsingError> {
     if !association.has_tag_name("association") {
         return Err(ParsingError::InvalidTagName {
             expected: "association",
@@ -383,7 +396,31 @@ fn parse_association(association: Node) -> Result<Association<FixedOffset>, Pars
         })
     }
 
-    todo!()
+    Ok(
+        Association {
+            category: match &*association.field_text("category")? {
+                "divide" => {AssociationCategory::Divide}
+                "join" => {AssociationCategory::Join}
+                x => {return Err(ParsingError::InvalidAssociationCategory(x.parse().unwrap()))}
+            },
+            rid: association.field_text("rid")?,
+            uid: association.field_text("uid")?,
+            trainid: association.field_text("trainid")?,
+            rsid: association.field_text("rsid").ok(),
+            sdd: association.field_date("sdd")?,
+            origin: Some(Location {
+                name: association.field_text("origin")?,
+                crs: association.field_text("originCRS").ok(),
+                tiploc: association.field_text("originTiploc").ok()
+            }),
+            destination: Some(Location {
+                name: association.field_text("destination")?,
+                crs: association.field_text("destCRS").ok(),
+                tiploc: association.field_text("destTiploc").ok()
+            }),
+            cancelled: association.field_bool("cancelled", false)?
+        }
+    )
 }
 
 fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>, ParsingError> {
@@ -397,9 +434,9 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
     Ok(
         ServiceLocation {
             location: Location {
-                name: get_field_text(location, "locationName")?,
-                destination_crs: get_field_text(location, "crs").ok(),
-                destination_tiploc: get_field_text(location, "tiploc").ok()
+                name: location.field_text("locationName")?,
+                crs: location.field_text("crs").ok(),
+                tiploc: location.field_text("tiploc").ok()
             },
             associations: {
                 match location.children().find(|x| x.has_tag_name("associations")) {
@@ -423,56 +460,66 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
                     }
                 }
             },
-            activity: {
-                match get_field_text(location, "activities")?.trim() {
+            activities: {
+                match &*(location.field_text("activities")?) {
                     "" => {None}
-                    activity => {
-                        Some(
-                            match activity {
-                                "-D" => {Activity::StopDetach}
-                                "-T" => {Activity::StopAttachDetach}
-                                "-U" => {Activity::StopAttach}
-                                "A" => {Activity::StopOrShuntForPass}
-                                "AE" => {Activity::AttachOrDetachAssistingLocomotive}
-                                "AX" => {Activity::ShowsAsXOnArrival}
-                                "BL" => {Activity::StopsForBankingLocomotive}
-                                "C" => {Activity::StopsToChangeCrew}
-                                "D" => {Activity::StopsToSetDownPassengers}
-                                "E" => {Activity::StopsForExamination}
-                                "G" => {Activity::GBPRTTDataToAdd}
-                                "H" => {Activity::NotionalActivity}
-                                "HH" => {Activity::NotionalActivityThirdColumn}
-                                "K" => {Activity::PassengerCountPoint}
-                                "KC" => {Activity::TicketCollectionAndExaminationPoint}
-                                "KE" => {Activity::TicketExaminationPoint}
-                                "KF" => {Activity::TicketExaminationPointFirstClass}
-                                "KS" => {Activity::SelectiveTicketExaminationPoint}
-                                "L" => {Activity::StopsToChangeLocomotive}
-                                "N" => {Activity::StopNotAdvertised}
-                                "OP" => {Activity::StopsForOtherReasons}
-                                "OR" => {Activity::TrainLocomotiveOnRear}
-                                "PR" => {Activity::PropellingBetweenPointsShown}
-                                "R" => {Activity::StopsWhenRequired}
-                                "RM" => {Activity::StopsForReversingMove}
-                                "RR" => {Activity::StopsForLocomotiveToRunRoundTrain}
-                                "S" => {Activity::StopsForRailwayPersonnel}
-                                "T" => {Activity::StopsToTakeUpAndSetDownPassengers}
-                                "TB" => {Activity::TrainBegins}
-                                "TF" => {Activity::TrainFinishes}
-                                "TS" => {Activity::ActivityRequestedForTOPS}
-                                "TW" => {Activity::StopsOrPassesForTabletOrStaffOrToken}
-                                "U" => {Activity::StopsToTakeUpPassengers}
-                                "W" => {Activity::StopsForWateringOfCoaches}
-                                "X" => {Activity::PassesAnotherTrain}
+                    activities => {
+                        Some({
+                            let mut ret: Vec<Activity> = Vec::new();
 
-                                x => {return Err(ParsingError::InvalidActivity(x.parse().unwrap()))}
+                            for activity in activities.as_bytes().chunks(2).map(|x| from_utf8(x).unwrap()).collect::<Vec<&str>>() {
+                                let code = match activity.trim() {
+                                    "-D" => {Activity::StopDetach}
+                                    "-T" => {Activity::StopAttachDetach}
+                                    "-U" => {Activity::StopAttach}
+                                    "A" => {Activity::StopOrShuntForPass}
+                                    "AE" => {Activity::AttachOrDetachAssistingLocomotive}
+                                    "AX" => {Activity::ShowsAsXOnArrival}
+                                    "BL" => {Activity::StopsForBankingLocomotive}
+                                    "C" => {Activity::StopsToChangeCrew}
+                                    "D" => {Activity::StopsToSetDownPassengers}
+                                    "E" => {Activity::StopsForExamination}
+                                    "G" => {Activity::GBPRTTDataToAdd}
+                                    "H" => {Activity::NotionalActivity}
+                                    "HH" => {Activity::NotionalActivityThirdColumn}
+                                    "K" => {Activity::PassengerCountPoint}
+                                    "KC" => {Activity::TicketCollectionAndExaminationPoint}
+                                    "KE" => {Activity::TicketExaminationPoint}
+                                    "KF" => {Activity::TicketExaminationPointFirstClass}
+                                    "KS" => {Activity::SelectiveTicketExaminationPoint}
+                                    "L" => {Activity::StopsToChangeLocomotive}
+                                    "N" => {Activity::StopNotAdvertised}
+                                    "OP" => {Activity::StopsForOtherReasons}
+                                    "OR" => {Activity::TrainLocomotiveOnRear}
+                                    "PR" => {Activity::PropellingBetweenPointsShown}
+                                    "R" => {Activity::StopsWhenRequired}
+                                    "RM" => {Activity::StopsForReversingMove}
+                                    "RR" => {Activity::StopsForLocomotiveToRunRoundTrain}
+                                    "S" => {Activity::StopsForRailwayPersonnel}
+                                    "T" => {Activity::StopsToTakeUpAndSetDownPassengers}
+                                    "TB" => {Activity::TrainBegins}
+                                    "TF" => {Activity::TrainFinishes}
+                                    "TS" => {Activity::ActivityRequestedForTOPS}
+                                    "TW" => {Activity::StopsOrPassesForTabletOrStaffOrToken}
+                                    "U" => {Activity::StopsToTakeUpPassengers}
+                                    "W" => {Activity::StopsForWateringOfCoaches}
+                                    "X" => {Activity::PassesAnotherTrain}
+                                    "" => {Activity::None}
+
+                                    x => {return Err(ParsingError::InvalidActivity(x.parse().unwrap()))}
+                                };
+
+                                ret.push(code);
                             }
-                        )
+
+                            ret.dedup_by(|a, _| *a == Activity::None);
+                            ret
+                        })
                     }
                 }
             },
             length: {
-                match get_field::<u16>(location, "length") {
+                match location.field::<u16>("length") {
                     Ok(x) => {
                         if x == 0 {
                             None
@@ -483,25 +530,25 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
                     Err(_) => {None}
                 }
             },
-            detach_front: get_field_bool(location, "detachFront", false)?,
-            operational: get_field_bool(location, "isOperational", false)?,
-            pass: get_field_bool(location, "isPass", false)?,
-            cancelled: get_field_bool(location, "isCancelled", false)?,
+            detach_front: location.field_bool("detachFront", false)?,
+            operational: location.field_bool("isOperational", false)?,
+            pass: location.field_bool("isPass", false)?,
+            cancelled: location.field_bool("isCancelled", false)?,
             false_destination: {
-                get_field_text(location, "falseDest").ok().map(|name| Location {
+                location.field_text("falseDest").ok().map(|name| Location {
                     name,
-                    destination_crs: None,
-                    destination_tiploc: get_field_text(location, "fdTiploc").ok()
+                    crs: None,
+                    tiploc: location.field_text("fdTiploc").ok()
                 })
             },
-            platform: get_field::<u8>(location, "platform").ok(),
-            platform_hidden: get_field_bool(location, "platformIsHidden", false)?,
+            platform: location.field::<u8>("platform").ok(),
+            platform_hidden: location.field_bool("platformIsHidden", false)?,
             // The docs make this misspelling. Is it a mistake? Who knows!
-            suppressed: get_field_bool(location, "serviceIsSupressed", false)?,
+            suppressed: location.field_bool("serviceIsSupressed", false)?,
             arrival_time: {
-                match get_field_time(location, "sta") {
+                match location.field_time("sta") {
                     Ok(sta) => {
-                        let forecast_type = match &*get_field_text(location, "arrivalType")? {
+                        let forecast_type = match &*location.field_text("arrivalType")? {
                             "Actual" => {ForecastType::Actual}
                             "Forecast" => {ForecastType::Estimated}
                             x => {return Err(ParsingError::InvalidForecast(x.parse().unwrap()))}
@@ -511,11 +558,11 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
                             ServiceTime {
                                 scheduled: Some(sta),
                                 time: match forecast_type {
-                                    ForecastType::Actual => {get_field_time(location, "ata").ok()}
-                                    ForecastType::Estimated => {get_field_time(location, "eta").ok()}
+                                    ForecastType::Actual => {location.field_time("ata").ok()}
+                                    ForecastType::Estimated => {location.field_time("eta").ok()}
                                 },
                                 forecast_type: Some(forecast_type),
-                                source: get_field_text(location, "arrivalSource").ok()
+                                source: location.field_text("arrivalSource").ok()
                             }
                         )
                     }
@@ -523,9 +570,9 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
                 }
             },
             departure_time: {
-                match get_field_time(location, "std") {
+                match location.field_time("std") {
                     Ok(std) => {
-                        let forecast_type = match &*get_field_text(location, "departureType")? {
+                        let forecast_type = match &*location.field_text("departureType")? {
                             "Actual" => {ForecastType::Actual}
                             "Forecast" => {ForecastType::Estimated}
                             x => {return Err(ParsingError::InvalidForecast(x.parse().unwrap()))}
@@ -535,11 +582,11 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
                             ServiceTime {
                                 scheduled: Some(std),
                                 time: match forecast_type {
-                                    ForecastType::Actual => {get_field_time(location, "atd").ok()}
-                                    ForecastType::Estimated => {get_field_time(location, "etd").ok()}
+                                    ForecastType::Actual => {location.field_time("atd").ok()}
+                                    ForecastType::Estimated => {location.field_time("etd").ok()}
                                 },
                                 forecast_type: Some(forecast_type),
-                                source: get_field_text(location, "departureSource").ok()
+                                source: location.field_text("departureSource").ok()
                             }
                         )
                     }
@@ -548,7 +595,7 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
             },
 
             #[allow(deprecated)]
-            lateness: get_field_text(location, "lateness").ok()
+            lateness: location.field_text("lateness").ok()
         }
     )
 }
@@ -561,7 +608,7 @@ fn parse_service_details(details: Node) -> Result<ServiceDetails<FixedOffset>, P
         })
     }
 
-    let typ = &*get_field_text(details, "serviceType")?;
+    let typ = &*details.field_text("serviceType")?;
 
     if typ != "train" {
         return Err(ParsingError::UnsupportedServiceType(typ.parse().unwrap()))
@@ -569,20 +616,20 @@ fn parse_service_details(details: Node) -> Result<ServiceDetails<FixedOffset>, P
 
     Ok(
         ServiceDetails {
-            generated_at: get_field_time(details, "generatedAt")?,
-            rid: get_field_text(details, "rid")?,
-            uid: get_field_text(details, "uid")?,
-            rsid: get_field_text(details, "rsid").ok(),
-            trainid: get_field_text(details, "trainid")?,
-            sdd: get_field_date(details, "sdd")?,
-            passenger_service: get_field_bool(details, "isPassengerService", true)?,
-            charter: get_field_bool(details, "isCharter", false)?,
-            category: get_field_text(details, "category")?,
-            operator: get_field_text(details, "operator")?,
-            operator_code: get_field_text(details, "operatorCode")?,
-            cancel_reason: get_field_text(details, "cancelReason").ok(),
-            delay_reason: get_field_text(details, "delayReason").ok(),
-            reverse_formation: get_field_bool(details, "isReverseFormation", false)?,
+            generated_at: details.field_time("generatedAt")?,
+            rid: details.field_text("rid")?,
+            uid: details.field_text("uid")?,
+            rsid: details.field_text("rsid").ok(),
+            trainid: details.field_text("trainid")?,
+            sdd: details.field_date("sdd")?,
+            passenger_service: details.field_bool("isPassengerService", true)?,
+            charter: details.field_bool("isCharter", false)?,
+            category: details.field_text("category")?,
+            operator: details.field_text("operator")?,
+            operator_code: details.field_text("operatorCode")?,
+            cancel_reason: details.field_text("cancelReason").ok(),
+            delay_reason: details.field_text("delayReason").ok(),
+            reverse_formation: details.field_bool("isReverseFormation", false)?,
             locations: {
                 let mut vec = Vec::new();
 
