@@ -1,4 +1,5 @@
 # openldbsvws-rs
+
 Rust library for National Rail Enquiries' OpenLDBSVWS API.
 
 This code is licensed under the WTFPL, but its output is not.

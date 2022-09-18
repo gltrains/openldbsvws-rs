@@ -1,9 +1,13 @@
 use roxmltree::{Document, Node};
-use reqwest::Client;
 use std::time::Duration;
 use std::str::FromStr;
+use core::any::type_name;
+use core::result::Result;
 use chrono::{TimeZone, DateTime, FixedOffset, NaiveDate};
-use anyhow::{anyhow, Context, Result, Error};
+use thiserror::Error;
+
+#[cfg(feature = "reqwest")]
+use reqwest::Client;
 
 // Why are these macros and not consts?
 // For some reason, format! does not support
@@ -258,43 +262,97 @@ pub struct ServiceDetails<T: TimeZone> {
     locations: Vec<ServiceLocation<T>>
 }
 
+/// A parsing error.
+/// This describes an error that occurred while translating XML into a struct.
+#[derive(Error, Debug)]
+pub enum ParsingError {
+    /// An invalid tag name.
+    #[error("invalid tag name, expected {expected:?}, got {found:?}")]
+    InvalidTagName {
+        /// The tag name that was expected.
+        expected: &'static str,
+        /// The tag name that was found.
+        found: String
+    },
+    /// An invalid activity. The string represents the activity that was found.
+    #[error("invalid activity, got {0}")]
+    InvalidActivity(String),
+    /// An invalid forecast type. The string represents the forecast type that was found.
+    #[error("invalid forecast type, expected Actual or Forecast, got {0}")]
+    InvalidForecast(String),
+    /// A missing field. The string represents the field that was not found.
+    #[error("field {0} is missing")]
+    MissingField(&'static str),
+    /// An invalid field.
+    #[error("field {field:?} couldn't be parsed, expected {expected:?}, got {found:?}")]
+    InvalidField {
+        /// The field name.
+        field: &'static str,
+        /// What was expected. This is purely for diagnostic reasons.
+        expected: &'static str,
+        /// The contents of the field.
+        found: Option<String>
+    },
+    /// An unsupported service type. The string represents the service type that was found.
+    #[error("unsupported service type {0}")]
+    UnsupportedServiceType(String)
+}
+
 #[inline(always)]
-fn get_field_text(node: Node, name: &str) -> Result<String> {
+fn get_field_text(node: Node, name: &'static str) -> Result<String, ParsingError> {
+    let node = node.children()
+        .find(|x| x.has_tag_name(name))
+        .ok_or(ParsingError::MissingField(name))?;
+
     Ok(
-        node.children()
-            .find(|x| x.has_tag_name(name))
-            .with_context(|| format!("couldn't find field {}", name))?
-            .text()
-            .with_context(|| format!("couldn't get {} text", name))?
+        node.text()
+            .ok_or(ParsingError::InvalidField {
+                field: name,
+                expected: "text",
+                found: None
+            })?
             .to_string()
     )
 }
 
 #[inline(always)]
-fn get_field<T: FromStr>(node: Node, name: &str) -> Result<T> {
-    match get_field_text(node, name)?.parse::<T>() {
-        Ok(x) => {Ok(x)}
-        Err(_) => {Err(anyhow!("couldn't parse {}", name))}
-    }
+fn get_field<T: FromStr>(node: Node, name: &'static str) -> Result<T, ParsingError> {
+    let text = get_field_text(node, name)?;
+
+    text.parse::<T>()
+        .map_err(|_| ParsingError::InvalidField {
+            field: name,
+            expected: type_name::<T>(),
+            found: Some(text)
+        })
 }
 
 #[inline(always)]
-fn get_field_time(node: Node, name: &str) -> Result<DateTime<FixedOffset>> {
-    DateTime::parse_from_rfc3339(
-        &*get_field_text(node, name)?
-    ).with_context(|| format!("couldn't parse {} time", name))
+fn get_field_time(node: Node, name: &'static str) -> Result<DateTime<FixedOffset>, ParsingError> {
+    let text = get_field_text(node, name)?;
+
+    DateTime::parse_from_rfc3339(&text)
+        .map_err(|_| ParsingError::InvalidField {
+            field: name,
+            expected: "DateTime",
+            found: Some(text)
+        })
 }
 
 #[inline(always)]
-fn get_field_date(node: Node, name: &str) -> Result<NaiveDate> {
-    NaiveDate::parse_from_str(
-        &*get_field_text(node, name)?,
-        "%Y-%m-%d"
-    ).with_context(|| format!("couldn't parse {} date", name))
+fn get_field_date(node: Node, name: &'static str) -> Result<NaiveDate, ParsingError> {
+    let text = get_field_text(node, name)?;
+
+    NaiveDate::parse_from_str(&text, "%Y-%m-%d")
+        .map_err(|_| ParsingError::InvalidField {
+            field: name,
+            expected: "NaiveDate",
+            found: Some(text)
+        })
 }
 
 #[inline(always)]
-fn get_field_bool(node: Node, name: &str, default: bool) -> Result<bool> {
+fn get_field_bool(node: Node, name: &'static str, default: bool) -> Result<bool, ParsingError> {
     match get_field_text(node, name) {
         Ok(x) => {
             match &*x {
@@ -304,8 +362,12 @@ fn get_field_bool(node: Node, name: &str, default: bool) -> Result<bool> {
                 "false" => {
                     Ok(false)
                 },
-                res => {
-                    Err(anyhow!("field {} was found but was not true or false (got {})", name, res))
+                _ => {
+                    Err(ParsingError::InvalidField {
+                        field: name,
+                        expected: "bool",
+                        found: Some(x)
+                    })
                 }
             }
         }
@@ -313,17 +375,23 @@ fn get_field_bool(node: Node, name: &str, default: bool) -> Result<bool> {
     }
 }
 
-fn parse_association(association: Node) -> Result<Association<FixedOffset>> {
+fn parse_association(association: Node) -> Result<Association<FixedOffset>, ParsingError> {
     if !association.has_tag_name("association") {
-        return Err(anyhow!("not an association"))
+        return Err(ParsingError::InvalidTagName {
+            expected: "association",
+            found: association.tag_name().name().parse().unwrap()
+        })
     }
 
     todo!()
 }
 
-fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>> {
+fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>, ParsingError> {
     if !location.has_tag_name("location") {
-        return Err(anyhow!("not a location, got a {}", location.tag_name().name()))
+        return Err(ParsingError::InvalidTagName {
+            expected: "location",
+            found: location.tag_name().name().parse().unwrap()
+        })
     }
 
     Ok(
@@ -397,7 +465,7 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
                                 "W" => {Activity::StopsForWateringOfCoaches}
                                 "X" => {Activity::PassesAnotherTrain}
 
-                                _ => {return Err(anyhow!("invalid activity code {}", activity))}
+                                x => {return Err(ParsingError::InvalidActivity(x.parse().unwrap()))}
                             }
                         )
                     }
@@ -420,18 +488,11 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
             pass: get_field_bool(location, "isPass", false)?,
             cancelled: get_field_bool(location, "isCancelled", false)?,
             false_destination: {
-                match get_field_text(location, "falseDest").ok() {
-                    Some(name) => {
-                        Some(
-                            Location {
-                                name,
-                                destination_crs: None,
-                                destination_tiploc: get_field_text(location, "fdTiploc").ok()
-                            }
-                        )
-                    }
-                    None => {None}
-                }
+                get_field_text(location, "falseDest").ok().map(|name| Location {
+                    name,
+                    destination_crs: None,
+                    destination_tiploc: get_field_text(location, "fdTiploc").ok()
+                })
             },
             platform: get_field::<u8>(location, "platform").ok(),
             platform_hidden: get_field_bool(location, "platformIsHidden", false)?,
@@ -443,7 +504,7 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
                         let forecast_type = match &*get_field_text(location, "arrivalType")? {
                             "Actual" => {ForecastType::Actual}
                             "Forecast" => {ForecastType::Estimated}
-                            x => {return Err(anyhow!("expected actual/forecast for arrivalType, got {}", x))}
+                            x => {return Err(ParsingError::InvalidForecast(x.parse().unwrap()))}
                         };
 
                         Some(
@@ -467,7 +528,7 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
                         let forecast_type = match &*get_field_text(location, "departureType")? {
                             "Actual" => {ForecastType::Actual}
                             "Forecast" => {ForecastType::Estimated}
-                            x => {return Err(anyhow!("expected actual/forecast for departureType, got {}", x))}
+                            x => {return Err(ParsingError::InvalidForecast(x.parse().unwrap()))}
                         };
 
                         Some(
@@ -485,20 +546,25 @@ fn parse_service_location(location: Node) -> Result<ServiceLocation<FixedOffset>
                     Err(_) => {None}
                 }
             },
+
+            #[allow(deprecated)]
             lateness: get_field_text(location, "lateness").ok()
         }
     )
 }
 
-fn parse_service_details(details: Node) -> Result<ServiceDetails<FixedOffset>> {
+fn parse_service_details(details: Node) -> Result<ServiceDetails<FixedOffset>, ParsingError> {
     if !details.has_tag_name("GetServiceDetailsResult") {
-        return Err(anyhow!("not a GetServiceDetailsResult"))
+        return Err(ParsingError::InvalidTagName {
+            expected: "GetServiceDetailsResult",
+            found: details.tag_name().name().parse().unwrap()
+        })
     }
 
     let typ = &*get_field_text(details, "serviceType")?;
 
     if typ != "train" {
-        return Err(anyhow!("not a train service, is a {}", typ))
+        return Err(ParsingError::UnsupportedServiceType(typ.parse().unwrap()))
     }
 
     Ok(
@@ -520,7 +586,10 @@ fn parse_service_details(details: Node) -> Result<ServiceDetails<FixedOffset>> {
             locations: {
                 let mut vec = Vec::new();
 
-                for node in details.children().find(|x| x.has_tag_name("locations")).context("no locations")?.children() {
+                for node in details.children()
+                    .find(|x| x.has_tag_name("locations"))
+                    .ok_or(ParsingError::MissingField("locations"))?
+                    .children() {
                     vec.push(parse_service_location(node)?)
                 }
 
@@ -530,17 +599,48 @@ fn parse_service_details(details: Node) -> Result<ServiceDetails<FixedOffset>> {
     )
 }
 
-pub async fn get_arrival_details<'a>(client: Client, token: &str, station: &str) -> Result<Document<'a>> {
+/// A fetch error.
+/// This describes an error that occurred while making a request to OpenLDBSVWS.
+#[derive(Error, Debug)]
+#[cfg(feature = "reqwest")]
+pub enum FetchError {
+    /// An error returned by the server.
+    #[error("server responded with error {error:?}")]
+    StatusError {
+        error: u16,
+        document: String
+    },
+    /// An error while sending the request.
+    #[error("couldn't send request")]
+    RequestError {
+        source: reqwest::Error
+    },
+    /// An error while parsing the XML document into a struct.
+    #[error("couldn't parse")]
+    ParseError {
+        source: ParsingError
+    },
+    /// An error while parsing the response into an XML document.
+    #[error("malformed XML document")]
+    ParseXMLError {
+        source: roxmltree::Error
+    }
+}
+
+#[cfg(feature = "reqwest")]
+pub async fn get_arrival_details<'a>(client: Client, token: &str, station: &str) -> Result<Document<'a>, FetchError> {
     todo!()
 }
 
-pub async fn get_departure_details<'a>(client: Client, token: &str, station: &str) -> Result<Document<'a>> {
+#[cfg(feature = "reqwest")]
+pub async fn get_departure_details<'a>(client: Client, token: &str, station: &str) -> Result<Document<'a>, FetchError> {
     todo!()
 }
 
 /// Gets the service details of a service given it's RTTI ID and a valid OpenLDBSVWS (not OpenLDBWS)
 /// token.
-pub async fn get_service_details(client: Client, token: &str, rid: &str) -> Result<ServiceDetails<FixedOffset>> {
+#[cfg(feature = "reqwest")]
+pub async fn get_service_details(client: Client, token: &str, rid: &str) -> Result<ServiceDetails<FixedOffset>, FetchError> {
     let service_details_payload = format!(service_details!(), token = token, rid = rid);
     let res = client.post("https://lite.realtime.nationalrail.co.uk/OpenLDBSVWS/ldbsv13.asmx")
         .body(service_details_payload)
@@ -549,16 +649,46 @@ pub async fn get_service_details(client: Client, token: &str, rid: &str) -> Resu
         .header("Accept", "text/xml")
         .send()
         .await
-        .context("failed to send request")?;
+        .map_err(|e| FetchError::RequestError {
+            source: e
+        })?;
 
-    let result = res.text().await.context("couldn't get response result")?;
+    let status = res.status();
+    let result = res.text()
+        .await
+        .map_err(|e| FetchError::RequestError {
+            source: e
+        })?;
 
-    let doc = Document::parse(&*result).context("couldn't parse document")?;
+    if !status.is_success() {
+        return Err(FetchError::StatusError {
+            error: status.as_u16(),
+            document: result
+        })
+    }
 
-    let details = doc.root()
+    let doc = Document::parse(&result)
+        .map_err(|e| FetchError::ParseXMLError {
+            source: e
+        })?;
+
+    let response = doc.root()
         .descendants()
+        .find(|x| x.has_tag_name("GetServiceDetailsByRIDResponse"))
+        .ok_or(ParsingError::MissingField("GetServiceDetailsByRIDResponse"))
+        .map_err(|e| FetchError::ParseError {
+            source: e
+        })?;
+
+    let details = response.children()
         .find(|x| x.has_tag_name("GetServiceDetailsResult"))
-        .context("server didn't return a result")?;
+        .ok_or(ParsingError::MissingField("GetServiceDetailsResult"))
+        .map_err(|e| FetchError::ParseError {
+            source: e
+        })?;
 
     parse_service_details(details)
+        .map_err(|e| FetchError::ParseError {
+            source: e
+        })
 }
