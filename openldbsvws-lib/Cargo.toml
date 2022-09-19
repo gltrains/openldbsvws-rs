@@ -8,5 +8,10 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.22"
 reqwest = { version = "0.11.11", optional = true }
-roxmltree = "0.15.0"
+roxmltree = { version = "0.15.0", optional = true }
 thiserror = "1.0.35"
+
+[features]
+default = ["reqwest", "roxmltree"]
+reqwest = ["dep:reqwest", "roxmltree"]
+roxmltree = ["dep:roxmltree"]
