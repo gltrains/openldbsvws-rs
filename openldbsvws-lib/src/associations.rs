@@ -1,7 +1,7 @@
-use chrono::NaiveDate;
 use crate::parsable::Parsable;
 use crate::services::Location;
 use crate::{ParsingError, Traversable};
+use chrono::NaiveDate;
 
 /// Train association categories.
 #[derive(Debug)]
@@ -13,7 +13,7 @@ pub enum AssociationCategory {
     /// A train links from this train.
     LinkedFrom,
     /// A train links to this train.
-    LinkedTo
+    LinkedTo,
 }
 
 /// A train association.
@@ -38,7 +38,7 @@ pub struct Association {
     /// The destination location of the associated service.
     pub destination: Option<Location>,
     /// If true, this association is cancelled and will no longer happen.
-    pub cancelled: bool
+    pub cancelled: bool,
 }
 
 impl Parsable for Association {
@@ -46,34 +46,32 @@ impl Parsable for Association {
         if association.tag_name() != "association" {
             return Err(ParsingError::InvalidTagName {
                 expected: "association",
-                found: association.tag_name().parse().unwrap()
-            })
+                found: association.tag_name().parse().unwrap(),
+            });
         }
 
-        Ok(
-            Association {
-                category: match &*association.child("category")?.get_text()? {
-                    "divide" => {AssociationCategory::Divide}
-                    "join" => {AssociationCategory::Join}
-                    x => {return Err(ParsingError::InvalidAssociationCategory(x.parse().unwrap()))}
-                },
-                rid: association.child("rid")?.get_text()?,
-                uid: association.child("uid")?.get_text()?,
-                trainid: association.child("trainid")?.get_text()?,
-                rsid: association.child("rsid")?.get_text().ok(),
-                sdd: association.child("sdd")?.get_date()?,
-                origin: Some(Location {
-                    name: association.child("origin")?.get_text()?,
-                    crs: association.child("originCRS")?.get_text().ok(),
-                    tiploc: association.child("originTiploc")?.get_text().ok()
-                }),
-                destination: Some(Location {
-                    name: association.child("destination")?.get_text()?,
-                    crs: association.child("destCRS")?.get_text().ok(),
-                    tiploc: association.child("destTiploc")?.get_text().ok()
-                }),
-                cancelled: association.child("cancelled")?.get_bool(false)?
-            }
-        )
+        Ok(Association {
+            category: match &*association.child("category")?.get_text()? {
+                "divide" => AssociationCategory::Divide,
+                "join" => AssociationCategory::Join,
+                x => return Err(ParsingError::InvalidAssociationCategory(x.parse().unwrap())),
+            },
+            rid: association.child("rid")?.get_text()?,
+            uid: association.child("uid")?.get_text()?,
+            trainid: association.child("trainid")?.get_text()?,
+            rsid: association.child("rsid")?.get_text().ok(),
+            sdd: association.child("sdd")?.get_date()?,
+            origin: Some(Location {
+                name: association.child("origin")?.get_text()?,
+                crs: association.child("originCRS")?.get_text().ok(),
+                tiploc: association.child("originTiploc")?.get_text().ok(),
+            }),
+            destination: Some(Location {
+                name: association.child("destination")?.get_text()?,
+                crs: association.child("destCRS")?.get_text().ok(),
+                tiploc: association.child("destTiploc")?.get_text().ok(),
+            }),
+            cancelled: association.child("cancelled")?.get_bool(false)?,
+        })
     }
 }

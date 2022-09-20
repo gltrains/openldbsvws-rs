@@ -7,16 +7,11 @@ use roxmltree::Children;
 #[cfg(feature = "roxmltree")]
 use roxmltree::Node;
 
-pub trait Iter<T>:
-    IntoIterator<Item = T, IntoIter = dyn Iterator<Item = T>> + Iterator<Item = T>
-{
-}
-
 pub trait Traversable: Sized {
     type Iter: Iterator<Item = Self> + IntoIterator<Item = Self>;
 
     fn child(&self, name: &'static str) -> Result<Self, ParsingError>;
-    fn children(&self) -> Box<dyn Iter<Self>>;
+    fn children(&self) -> Self::Iter;
     fn tag_name(&self) -> &str;
     fn get_text(&self) -> Result<String, ParsingError>;
     fn get<T: FromStr>(&self) -> Result<T, ParsingError>;
@@ -32,33 +27,32 @@ impl<'a, 'b> Traversable for Node<'a, 'b> {
     fn child(&self, name: &'static str) -> Result<Self, ParsingError> {
         self.children()
             .find(|x| x.has_tag_name(name))
-            .ok_or(ParsingError::MissingField(name))
+            .ok_or(ParsingError::MissingField(name.to_owned()))
     }
 
-    fn children(&self) -> Box<dyn Iter<Self>> {
-        Box::new(self.children())
+    fn children(&self) -> Self::Iter {
+        self.children()
     }
 
-    fn tag_name(&self) -> &'b str {
+    fn tag_name(&self) -> &'a str {
         self.tag_name().name()
     }
 
     fn get_text(&self) -> Result<String, ParsingError> {
-        Ok(self
-            .text()
+        self.text()
             .ok_or(ParsingError::InvalidField {
-                field: name,
+                field: Traversable::tag_name(self).to_owned(),
                 expected: "text",
                 found: None,
-            })?
-            .to_string())
+            })
+            .map(|x| x.to_owned())
     }
 
     fn get<T: FromStr>(&self) -> Result<T, ParsingError> {
         let text = self.get_text()?;
 
         text.parse::<T>().map_err(|_| ParsingError::InvalidField {
-            field: name,
+            field: Traversable::tag_name(self).to_owned(),
             expected: type_name::<T>(),
             found: Some(text),
         })
@@ -68,7 +62,7 @@ impl<'a, 'b> Traversable for Node<'a, 'b> {
         let text = self.get_text()?;
 
         DateTime::parse_from_rfc3339(&text).map_err(|_| ParsingError::InvalidField {
-            field: name,
+            field: Traversable::tag_name(self).to_owned(),
             expected: "DateTime",
             found: Some(text),
         })
@@ -78,7 +72,7 @@ impl<'a, 'b> Traversable for Node<'a, 'b> {
         let text = self.get_text()?;
 
         NaiveDate::parse_from_str(&text, "%Y-%m-%d").map_err(|_| ParsingError::InvalidField {
-            field: name,
+            field: Traversable::tag_name(self).to_owned(),
             expected: "NaiveDate",
             found: Some(text),
         })
@@ -90,7 +84,7 @@ impl<'a, 'b> Traversable for Node<'a, 'b> {
                 "true" => Ok(true),
                 "false" => Ok(false),
                 _ => Err(ParsingError::InvalidField {
-                    field: name,
+                    field: Traversable::tag_name(self).to_owned(),
                     expected: "bool",
                     found: Some(x),
                 }),

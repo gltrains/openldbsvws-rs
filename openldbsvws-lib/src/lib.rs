@@ -115,13 +115,13 @@ pub async fn get_service_details(
         .root()
         .descendants()
         .find(|x| x.has_tag_name("GetServiceDetailsByRIDResponse"))
-        .ok_or(ParsingError::MissingField("GetServiceDetailsByRIDResponse"))
+        .ok_or_else(|| ParsingError::MissingField("GetServiceDetailsByRIDResponse".to_owned()))
         .map_err(|e| FetchError::ParseError { source: e })?;
 
     let details = response
         .children()
         .find(|x| x.has_tag_name("GetServiceDetailsResult"))
-        .ok_or(ParsingError::MissingField("GetServiceDetailsResult"))
+        .ok_or_else(|| ParsingError::MissingField("GetServiceDetailsResult".to_owned()))
         .map_err(|e| FetchError::ParseError { source: e })?;
 
     ServiceDetails::parse(details).map_err(|e| FetchError::ParseError { source: e })
