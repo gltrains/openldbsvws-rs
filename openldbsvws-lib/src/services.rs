@@ -1,33 +1,35 @@
-use std::str::from_utf8;
-use std::iter::Iterator;
-use chrono::{DateTime, FixedOffset, NaiveDate};
 use crate::associations::Association;
 use crate::parsable::Parsable;
-use crate::{ParsingError, Traversable};
+use crate::{bool, child, date, name, text, time, ParsingError};
+use chrono::{DateTime, FixedOffset, NaiveDate};
+use roxmltree::{Document, Node};
+use std::borrow::Borrow;
+use std::iter::Iterator;
+use std::str::{from_utf8, FromStr};
 
 /// A location. At least one of CRS or TIPLOC is specified.
-#[derive(Debug)]
-pub struct Location {
+#[derive(Debug, Clone)]
+pub struct Location<'a> {
     /// The location's name.
-    pub name: String,
+    pub name: &'a str,
     /// The CRS code of this location.
-    pub crs: Option<String>,
+    pub crs: Option<&'a str>,
     /// The TIPLOC code of this location.
-    pub tiploc: Option<String>
+    pub tiploc: Option<&'a str>,
 }
 
 /// Forecast types.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ForecastType {
     /// This time is the estimated time of arrival.
     Estimated,
     /// This time is the actual time of arrival.
-    Actual
+    Actual,
 }
 
 /// A service time.
-#[derive(Debug)]
-pub struct ServiceTime {
+#[derive(Debug, Clone)]
+pub struct ServiceTime<'a> {
     /// The public scheduled time of arrival of this service at this location.
     pub scheduled: Option<DateTime<FixedOffset>>,
     /// The time of arrival for this service at this location. If `forecast_type` is
@@ -36,14 +38,14 @@ pub struct ServiceTime {
     /// Whether the time is estimated or actual.
     pub forecast_type: Option<ForecastType>,
     /// The source of the time.
-    pub source: Option<String>
+    pub source: Option<&'a str>,
 }
 
 /// Activity codes.
 ///
 /// See [Activity Codes](https://wiki.openraildata.com//index.php?title=Activity_codes) on the
 /// Open Rail Data Wiki.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Activity {
     /// Stops to detach vehicles. (-D)
     StopDetach,
@@ -128,18 +130,18 @@ pub enum Activity {
     /// Passes another train at crossing point on a single line. (X)
     PassesAnotherTrain,
     /// No activity.
-    None
+    None,
 }
 
 /// A location in this service's schedule. Not all locations are stopped at.
-#[derive(Debug)]
-pub struct ServiceLocation {
+#[derive(Debug, Clone)]
+pub struct ServiceLocation<'a> {
     /// The location of this stop.
-    pub location: Location,
+    pub location: Location<'a>,
     /// Associations that happen at this stop.
-    pub associations: Option<Vec<Association>>,
+    pub associations: Option<Vec<Association<'a>>>,
     /// Ad-hoc alerts about this stop.
-    pub adhoc_alerts: Option<Vec<String>>,
+    pub adhoc_alerts: Option<Vec<&'a str>>,
     /// Activities that happen at this stop.
     pub activities: Option<Vec<Activity>>,
     /// The length of the train at this stop. If None, the length is unknown.
@@ -157,7 +159,7 @@ pub struct ServiceLocation {
     pub cancelled: bool,
     /// A false destination that should be displayed for this location. False destinations should be
     /// shown to the public.
-    pub false_destination: Option<Location>,
+    pub false_destination: Option<Location<'a>>,
     /// The platform number that the service is expected to use at this location. If None, the
     /// platform is not known.
     pub platform: Option<u8>,
@@ -167,202 +169,201 @@ pub struct ServiceLocation {
     /// station.
     pub suppressed: bool,
     /// The arrival time of this service.
-    pub arrival_time: Option<ServiceTime>,
+    pub arrival_time: Option<ServiceTime<'a>>,
     /// The departure time of this service.
-    pub departure_time: Option<ServiceTime>,
+    pub departure_time: Option<ServiceTime<'a>>,
     /// The lateness of this service, as given by the API. No guarantees are made about if this is
     /// parseable to an int, and sometimes it is blatantly wrong. Please calculate it yourself from
     /// the scheduled and actual times of the service.
-    #[deprecated(note = "lateness is not guaranteed to be parseable to an int, please use scheduled/actual arrival and departure")]
-    pub lateness: Option<String>
+    #[deprecated(
+        note = "lateness is not guaranteed to be parseable to an int, please use scheduled/actual arrival and departure"
+    )]
+    pub lateness: Option<&'a str>,
 }
 
-impl Parsable for ServiceLocation {
-    fn parse(location: impl Traversable) -> Result<ServiceLocation, ParsingError> {
-        if location.tag_name() != "location" {
+impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
+    fn parse(location: Node<'a, 'b>) -> Result<ServiceLocation<'b>, ParsingError<'b>> {
+        if name!(location) != "location" {
             return Err(ParsingError::InvalidTagName {
                 expected: "location",
-                found: location.tag_name().parse().unwrap()
-            })
+                found: name!(location),
+            });
         }
 
-        Ok(
-            ServiceLocation {
-                location: Location {
-                    name: location.child("locationName")?.get_text()?,
-                    crs: location.child("crs")?.get_text().ok(),
-                    tiploc: location.child("tiploc")?.get_text().ok()
-                },
-                associations: {
-                    match location.child("associations").ok() {
-                        None => {None}
-                        Some(associations) => {
-                            let mut vec = Vec::new();
+        Ok(ServiceLocation {
+            location: Location {
+                name: text!(location, "locationName")?,
+                crs: text!(location, "crs").ok(),
+                tiploc: text!(location, "tiploc").ok(),
+            },
+            associations: {
+                match child!(location, "associations").ok() {
+                    None => None,
+                    Some(associations) => {
+                        let mut vec = Vec::new();
 
-                            for node in associations.children() {
-                                vec.push(Association::parse(node)?)
-                            }
-
-                            Some(vec)
+                        for node in associations.children() {
+                            vec.push(Association::parse(node)?)
                         }
+
+                        Some(vec)
                     }
-                },
-                adhoc_alerts: location.child("adhocAlerts").ok().and_then(|alert| {
-                    todo!()
-                }),
-                activities: {
-                    match &*(location.child("activities")?.get_text()?) {
-                        "" => {None}
-                        activities => {
-                            Some({
-                                let mut ret: Vec<Activity> = Vec::new();
+                }
+            },
+            adhoc_alerts: child!(location, "adhocAlerts")
+                .ok()
+                .and_then(|alert| todo!()),
+            activities: {
+                match &*(text!(location, "activities")?) {
+                    "" => None,
+                    activities => Some({
+                        let mut ret: Vec<Activity> = Vec::new();
 
-                                for activity in activities.as_bytes().chunks(2).map(|x| from_utf8(x).unwrap()).collect::<Vec<&str>>() {
-                                    let code = match activity.trim() {
-                                        "-D" => {Activity::StopDetach}
-                                        "-T" => {Activity::StopAttachDetach}
-                                        "-U" => {Activity::StopAttach}
-                                        "A" => {Activity::StopOrShuntForPass}
-                                        "AE" => {Activity::AttachOrDetachAssistingLocomotive}
-                                        "AX" => {Activity::ShowsAsXOnArrival}
-                                        "BL" => {Activity::StopsForBankingLocomotive}
-                                        "C" => {Activity::StopsToChangeCrew}
-                                        "D" => {Activity::StopsToSetDownPassengers}
-                                        "E" => {Activity::StopsForExamination}
-                                        "G" => {Activity::GBPRTTDataToAdd}
-                                        "H" => {Activity::NotionalActivity}
-                                        "HH" => {Activity::NotionalActivityThirdColumn}
-                                        "K" => {Activity::PassengerCountPoint}
-                                        "KC" => {Activity::TicketCollectionAndExaminationPoint}
-                                        "KE" => {Activity::TicketExaminationPoint}
-                                        "KF" => {Activity::TicketExaminationPointFirstClass}
-                                        "KS" => {Activity::SelectiveTicketExaminationPoint}
-                                        "L" => {Activity::StopsToChangeLocomotive}
-                                        "N" => {Activity::StopNotAdvertised}
-                                        "OP" => {Activity::StopsForOtherReasons}
-                                        "OR" => {Activity::TrainLocomotiveOnRear}
-                                        "PR" => {Activity::PropellingBetweenPointsShown}
-                                        "R" => {Activity::StopsWhenRequired}
-                                        "RM" => {Activity::StopsForReversingMove}
-                                        "RR" => {Activity::StopsForLocomotiveToRunRoundTrain}
-                                        "S" => {Activity::StopsForRailwayPersonnel}
-                                        "T" => {Activity::StopsToTakeUpAndSetDownPassengers}
-                                        "TB" => {Activity::TrainBegins}
-                                        "TF" => {Activity::TrainFinishes}
-                                        "TS" => {Activity::ActivityRequestedForTOPS}
-                                        "TW" => {Activity::StopsOrPassesForTabletOrStaffOrToken}
-                                        "U" => {Activity::StopsToTakeUpPassengers}
-                                        "W" => {Activity::StopsForWateringOfCoaches}
-                                        "X" => {Activity::PassesAnotherTrain}
-                                        "" => {Activity::None}
+                        for activity in activities
+                            .as_bytes()
+                            .chunks(2)
+                            .map(|x| from_utf8(x).unwrap())
+                            .collect::<Vec<&str>>()
+                        {
+                            let code = match activity.trim() {
+                                "-D" => Activity::StopDetach,
+                                "-T" => Activity::StopAttachDetach,
+                                "-U" => Activity::StopAttach,
+                                "A" => Activity::StopOrShuntForPass,
+                                "AE" => Activity::AttachOrDetachAssistingLocomotive,
+                                "AX" => Activity::ShowsAsXOnArrival,
+                                "BL" => Activity::StopsForBankingLocomotive,
+                                "C" => Activity::StopsToChangeCrew,
+                                "D" => Activity::StopsToSetDownPassengers,
+                                "E" => Activity::StopsForExamination,
+                                "G" => Activity::GBPRTTDataToAdd,
+                                "H" => Activity::NotionalActivity,
+                                "HH" => Activity::NotionalActivityThirdColumn,
+                                "K" => Activity::PassengerCountPoint,
+                                "KC" => Activity::TicketCollectionAndExaminationPoint,
+                                "KE" => Activity::TicketExaminationPoint,
+                                "KF" => Activity::TicketExaminationPointFirstClass,
+                                "KS" => Activity::SelectiveTicketExaminationPoint,
+                                "L" => Activity::StopsToChangeLocomotive,
+                                "N" => Activity::StopNotAdvertised,
+                                "OP" => Activity::StopsForOtherReasons,
+                                "OR" => Activity::TrainLocomotiveOnRear,
+                                "PR" => Activity::PropellingBetweenPointsShown,
+                                "R" => Activity::StopsWhenRequired,
+                                "RM" => Activity::StopsForReversingMove,
+                                "RR" => Activity::StopsForLocomotiveToRunRoundTrain,
+                                "S" => Activity::StopsForRailwayPersonnel,
+                                "T" => Activity::StopsToTakeUpAndSetDownPassengers,
+                                "TB" => Activity::TrainBegins,
+                                "TF" => Activity::TrainFinishes,
+                                "TS" => Activity::ActivityRequestedForTOPS,
+                                "TW" => Activity::StopsOrPassesForTabletOrStaffOrToken,
+                                "U" => Activity::StopsToTakeUpPassengers,
+                                "W" => Activity::StopsForWateringOfCoaches,
+                                "X" => Activity::PassesAnotherTrain,
+                                "" => Activity::None,
 
-                                        x => {return Err(ParsingError::InvalidActivity(x.parse().unwrap()))}
-                                    };
-
-                                    ret.push(code);
-                                }
-
-                                ret.dedup_by(|a, _| *a == Activity::None);
-                                ret
-                            })
-                        }
-                    }
-                },
-                length: {
-                    match location.child("length")?.get::<u16>() {
-                        Ok(x) => {
-                            if x == 0 {
-                                None
-                            } else {
-                                Some(x)
-                            }
-                        }
-                        Err(_) => {None}
-                    }
-                },
-                detach_front: location.child("detachFront")?.get_bool(false)?,
-                operational: location.child("isOperational")?.get_bool(false)?,
-                pass: location.child("isPass")?.get_bool(false)?,
-                cancelled: location.child("isCancelled")?.get_bool(false)?,
-                false_destination: location.child("falseDest")?.get_text().ok().map(|name| Location {
-                    name,
-                    crs: None,
-                    tiploc: location.child("fdTiploc").ok().and_then(|x| x.get_text().ok())
-                }),
-                platform: location.child("platform")?.get::<u8>().ok(),
-                platform_hidden: location.child("platformIsHidden")?.get_bool(false)?,
-                // The docs make this misspelling. Is it a mistake? Who knows!
-                suppressed: location.child("serviceIsSupressed")?.get_bool(false)?,
-                arrival_time: {
-                    match location.child("sta")?.get_time() {
-                        Ok(sta) => {
-                            let forecast_type = match &*location.child("arrivalType")?.get_text()? {
-                                "Actual" => {ForecastType::Actual}
-                                "Forecast" => {ForecastType::Estimated}
-                                x => {return Err(ParsingError::InvalidForecast(x.parse().unwrap()))}
+                                x => return Err(ParsingError::InvalidActivity(x)),
                             };
 
-                            Some(
-                                ServiceTime {
-                                    scheduled: Some(sta),
-                                    time: match forecast_type {
-                                        ForecastType::Actual => {location.child("ata")?.get_time().ok()}
-                                        ForecastType::Estimated => {location.child("eta")?.get_time().ok()}
-                                    },
-                                    forecast_type: Some(forecast_type),
-                                    source: location.child("arrivalSource")?.get_text().ok()
-                                }
-                            )
+                            ret.push(code);
                         }
-                        Err(_) => {None}
-                    }
-                },
-                departure_time: {
-                    match location.child("std")?.get_time() {
-                        Ok(std) => {
-                            let forecast_type = match &*location.child("departureType")?.get_text()? {
-                                "Actual" => {ForecastType::Actual}
-                                "Forecast" => {ForecastType::Estimated}
-                                x => {return Err(ParsingError::InvalidForecast(x.parse().unwrap()))}
-                            };
 
-                            Some(
-                                ServiceTime {
-                                    scheduled: Some(std),
-                                    time: match forecast_type {
-                                        ForecastType::Actual => {location.child("atd")?.get_time().ok()}
-                                        ForecastType::Estimated => {location.child("etd")?.get_time().ok()}
-                                    },
-                                    forecast_type: Some(forecast_type),
-                                    source: location.child("departureSource")?.get_text().ok()
-                                }
-                            )
+                        ret.dedup_by(|a, _| *a == Activity::None);
+                        ret
+                    }),
+                }
+            },
+            length: {
+                match text!(location, "length")?.parse::<u16>() {
+                    Ok(x) => {
+                        if x == 0 {
+                            None
+                        } else {
+                            Some(x)
                         }
-                        Err(_) => {None}
                     }
-                },
+                    Err(_) => None,
+                }
+            },
+            detach_front: bool!(location, "detachFront", false)?,
+            operational: bool!(location, "isOperational", false)?,
+            pass: bool!(location, "isPass", false)?,
+            cancelled: bool!(location, "isCancelled", false)?,
+            false_destination: text!(location, "falseDest").ok().map(|name| Location {
+                name,
+                crs: None,
+                tiploc: text!(location, "fdTiploc").ok(),
+            }),
+            platform: text!(location, "platform")?.parse::<u8>().ok(),
+            platform_hidden: bool!(location, "platformIsHidden", false)?,
+            // The docs make this misspelling. Is it a mistake? Who knows!
+            suppressed: bool!(location, "serviceIsSupressed", false)?,
+            arrival_time: {
+                match time!(location, "sta") {
+                    Ok(sta) => {
+                        let forecast_type = match &*text!(location, "arrivalType")? {
+                            "Actual" => ForecastType::Actual,
+                            "Forecast" => ForecastType::Estimated,
+                            x => return Err(ParsingError::InvalidForecast(x)),
+                        };
 
-                #[allow(deprecated)]
-                lateness: location.child("lateness")?.get_text().ok()
-            }
-        )
+                        Some(ServiceTime {
+                            scheduled: Some(sta),
+                            time: match forecast_type {
+                                ForecastType::Actual => time!(location, "ata").ok(),
+                                ForecastType::Estimated => time!(location, "eta").ok(),
+                            },
+                            forecast_type: Some(forecast_type),
+                            source: text!(location, "arrivalSource").ok(),
+                        })
+                    }
+                    Err(_) => None,
+                }
+            },
+            departure_time: {
+                match time!(location, "std") {
+                    Ok(std) => {
+                        let forecast_type = match &*text!(location, "departureType")? {
+                            "Actual" => ForecastType::Actual,
+                            "Forecast" => ForecastType::Estimated,
+                            x => return Err(ParsingError::InvalidForecast(x)),
+                        };
+
+                        Some(ServiceTime {
+                            scheduled: Some(std),
+                            time: match forecast_type {
+                                ForecastType::Actual => time!(location, "atd").ok(),
+                                ForecastType::Estimated => time!(location, "etd").ok(),
+                            },
+                            forecast_type: Some(forecast_type),
+                            source: text!(location, "departureSource").ok(),
+                        })
+                    }
+                    Err(_) => None,
+                }
+            },
+
+            #[allow(deprecated)]
+            lateness: text!(location, "lateness").ok(),
+        })
     }
 }
 
 /// Details of a train service.
 #[derive(Debug)]
-pub struct ServiceDetails {
+pub struct ServiceDetails<'a, 'b> {
     /// The time these details were generated.
     pub generated_at: DateTime<FixedOffset>,
     /// A unique RTTI ID for this service that can be used to obtain full details of the service.
-    pub rid: String,
+    pub rid: &'b str,
     /// The TSDB Train UID value for this service, or if one is not available, then an RTTI
     /// allocated replacement.
-    pub uid: String,
+    pub uid: &'b str,
     /// The Retail Service ID of the service, if known.
-    pub rsid: Option<String>,
+    pub rsid: Option<&'b str>,
     /// The Train ID value (headcode) for this service.
-    pub trainid: String,
+    pub trainid: &'b str,
     /// The Scheduled Departure Data of this service.
     pub sdd: NaiveDate,
     /// If true, this is a passenger service. Non-passenger services should not be published to the
@@ -371,63 +372,81 @@ pub struct ServiceDetails {
     /// If true, this is a charter service.
     pub charter: bool,
     /// The category of this service.
-    pub category: String,
+    pub category: &'b str,
     /// The operator of this service.
-    pub operator: String,
+    pub operator: &'b str,
     /// The operator code of this service.
-    pub operator_code: String,
+    pub operator_code: &'b str,
     /// The cancellation reason, which is not always provided.
-    pub cancel_reason: Option<String>,
+    pub cancel_reason: Option<&'b str>,
     /// The delay reason, which is not always provided.
-    pub delay_reason: Option<String>,
+    pub delay_reason: Option<&'b str>,
     /// If true, this service is operating in the reverse of its normal formation.
     pub reverse_formation: bool,
     /// The list of the locations in this service's schedule.
-    pub locations: Vec<ServiceLocation>
+    pub locations: Vec<ServiceLocation<'b>>,
+
+    source: &'b str,
+    tree: Document<'a>,
+    node: Node<'a, 'b>,
 }
 
-impl Parsable for ServiceDetails {
-    fn parse(details: impl Traversable) -> Result<ServiceDetails, ParsingError> {
-        if details.tag_name() != "GetServiceDetailsResult" {
+impl<'a, 'b> TryFrom<&'a str> for ServiceDetails<'a, 'b>
+where
+    'a: 'b,
+{
+    type Error = ParsingError<'a>;
+
+    fn try_from(string: &'a str) -> Result<ServiceDetails<'a, 'b>, ParsingError<'a>> {
+        let document =
+            Document::parse(string).map_err(|e| ParsingError::XMLParseError { source: e })?;
+
+        let details = document
+            .root()
+            .descendants()
+            .find(|x| x.has_tag_name("GetServiceDetailsResult"))
+            .ok_or_else(|| ParsingError::MissingField("GetServiceDetailsResult"))?;
+
+        if name!(details) != "GetServiceDetailsResult" {
             return Err(ParsingError::InvalidTagName {
                 expected: "GetServiceDetailsResult",
-                found: details.tag_name().parse().unwrap()
-            })
+                found: name!(details),
+            });
         }
 
-        let typ = details.child("serviceType")?.get_text()?;
+        let typ = text!(details, "serviceType")?;
 
         if typ != "train" {
-            return Err(ParsingError::UnsupportedServiceType(typ.parse().unwrap()))
+            return Err(ParsingError::UnsupportedServiceType(typ));
         }
 
-        Ok(
-            ServiceDetails {
-                generated_at: details.child("generatedAt")?.get_time()?,
-                rid: details.child("rid")?.get_text()?,
-                uid: details.child("uid")?.get_text()?,
-                rsid: details.child("rsid")?.get_text().ok(),
-                trainid: details.child("trainid")?.get_text()?,
-                sdd: details.child("sdd")?.get_date()?,
-                passenger_service: details.child("isPassengerService")?.get_bool(true)?,
-                charter: details.child("isCharter")?.get_bool(false)?,
-                category: details.child("category")?.get_text()?,
-                operator: details.child("operator")?.get_text()?,
-                operator_code: details.child("operatorCode")?.get_text()?,
-                cancel_reason: details.child("cancelReason")?.get_text().ok(),
-                delay_reason: details.child("delayReason")?.get_text().ok(),
-                reverse_formation: details.child("isReverseFormation")?.get_bool(false)?,
-                locations: {
-                    let mut vec = Vec::new();
+        Ok(ServiceDetails {
+            generated_at: time!(details, "generatedAt")?,
+            rid: text!(details, "rid")?,
+            uid: text!(details, "uid")?,
+            rsid: text!(details, "rsid").ok(),
+            trainid: text!(details, "trainid")?,
+            sdd: date!(details, "sdd")?,
+            passenger_service: bool!(details, "isPassengerService", true)?,
+            charter: bool!(details, "isCharter", false)?,
+            category: text!(details, "category")?,
+            operator: text!(details, "operator")?,
+            operator_code: text!(details, "operatorCode")?,
+            cancel_reason: text!(details, "cancelReason").ok(),
+            delay_reason: text!(details, "delayReason").ok(),
+            reverse_formation: bool!(details, "isReverseFormation", false)?,
+            locations: {
+                let mut vec = Vec::new();
 
-                    for node in details.child("locations")?
-                        .children() {
-                        vec.push(ServiceLocation::parse(node)?)
-                    }
-
-                    vec
+                for node in child!(details, "locations")?.children() {
+                    vec.push(ServiceLocation::parse(node)?)
                 }
-            }
-        )
+
+                vec
+            },
+            source: string,
+            tree: document,
+            node: details,
+        })
     }
 }

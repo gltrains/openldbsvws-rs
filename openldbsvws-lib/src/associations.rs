@@ -1,10 +1,11 @@
 use crate::parsable::Parsable;
 use crate::services::Location;
-use crate::{ParsingError, Traversable};
+use crate::{bool, child, date, name, text, time, ParsingError};
 use chrono::NaiveDate;
+use roxmltree::Node;
 
 /// Train association categories.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AssociationCategory {
     /// A train joins this train.
     Join,
@@ -19,59 +20,59 @@ pub enum AssociationCategory {
 /// A train association.
 ///
 /// A train can join, divide, link from and link to another train.
-#[derive(Debug)]
-pub struct Association {
+#[derive(Debug, Clone)]
+pub struct Association<'a> {
     /// The association category.
     pub category: AssociationCategory,
     /// A unique RTTI ID for this service that can be used to obtain full details of the service.
-    pub rid: String,
+    pub rid: &'a str,
     /// The TSDB Train UID value for this service, or if one is not available, then an RTTI allocated replacement.
-    pub uid: String,
+    pub uid: &'a str,
     /// The Train ID value (headcode) for this service.
-    pub trainid: String,
+    pub trainid: &'a str,
     /// The Retail Service ID for this service, if known.
-    pub rsid: Option<String>,
+    pub rsid: Option<&'a str>,
     /// The Scheduled Departure Date of this service.
     pub sdd: NaiveDate,
     /// The origin location of the associated service.
-    pub origin: Option<Location>,
+    pub origin: Option<Location<'a>>,
     /// The destination location of the associated service.
-    pub destination: Option<Location>,
+    pub destination: Option<Location<'a>>,
     /// If true, this association is cancelled and will no longer happen.
     pub cancelled: bool,
 }
 
-impl Parsable for Association {
-    fn parse(association: impl Traversable) -> Result<Self, ParsingError> {
-        if association.tag_name() != "association" {
+impl<'a, 'b> Parsable<'a, 'b> for Association<'b> {
+    fn parse(association: Node<'a, 'b>) -> Result<Self, ParsingError<'b>> {
+        if name!(association) != "association" {
             return Err(ParsingError::InvalidTagName {
                 expected: "association",
-                found: association.tag_name().parse().unwrap(),
+                found: name!(association),
             });
         }
 
         Ok(Association {
-            category: match &*association.child("category")?.get_text()? {
+            category: match &*text!(association, "category")? {
                 "divide" => AssociationCategory::Divide,
                 "join" => AssociationCategory::Join,
-                x => return Err(ParsingError::InvalidAssociationCategory(x.parse().unwrap())),
+                x => return Err(ParsingError::InvalidAssociationCategory(x)),
             },
-            rid: association.child("rid")?.get_text()?,
-            uid: association.child("uid")?.get_text()?,
-            trainid: association.child("trainid")?.get_text()?,
-            rsid: association.child("rsid")?.get_text().ok(),
-            sdd: association.child("sdd")?.get_date()?,
+            rid: text!(association, "rid")?,
+            uid: text!(association, "uid")?,
+            trainid: text!(association, "trainid")?,
+            rsid: text!(association, "rsid").ok(),
+            sdd: date!(association, "sdd")?,
             origin: Some(Location {
-                name: association.child("origin")?.get_text()?,
-                crs: association.child("originCRS")?.get_text().ok(),
-                tiploc: association.child("originTiploc")?.get_text().ok(),
+                name: text!(association, "origin")?,
+                crs: text!(association, "originCRS").ok(),
+                tiploc: text!(association, "originTiploc").ok(),
             }),
             destination: Some(Location {
-                name: association.child("destination")?.get_text()?,
-                crs: association.child("destCRS")?.get_text().ok(),
-                tiploc: association.child("destTiploc")?.get_text().ok(),
+                name: text!(association, "destination")?,
+                crs: text!(association, "destCRS").ok(),
+                tiploc: text!(association, "destTiploc").ok(),
             }),
-            cancelled: association.child("cancelled")?.get_bool(false)?,
+            cancelled: bool!(association, "cancelled", false)?,
         })
     }
 }
