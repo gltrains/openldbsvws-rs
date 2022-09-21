@@ -1,10 +1,11 @@
 use crate::associations::Association;
-use crate::parsable::Parsable;
-use crate::{bool, child, date, name, text, time, ParsingError};
+use crate::parsable::{Parsable, ParsingError};
+use crate::{bool, child, date, name, text, time};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use roxmltree::{Document, Node};
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::iter::Iterator;
+use std::mem;
 use std::str::{from_utf8, FromStr};
 
 /// A location. At least one of CRS or TIPLOC is specified.
@@ -181,8 +182,14 @@ pub struct ServiceLocation<'a> {
     pub lateness: Option<&'a str>,
 }
 
-impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
-    fn parse(location: Node<'a, 'b>) -> Result<ServiceLocation<'b>, ParsingError<'b>> {
+impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b>
+where
+    'a: 'b,
+{
+    fn parse(
+        location: Node<'a, 'b>,
+        string: &'a str,
+    ) -> Result<ServiceLocation<'b>, ParsingError<'b>> {
         if name!(location) != "location" {
             return Err(ParsingError::InvalidTagName {
                 expected: "location",
@@ -192,9 +199,9 @@ impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
 
         Ok(ServiceLocation {
             location: Location {
-                name: text!(location, "locationName")?,
-                crs: text!(location, "crs").ok(),
-                tiploc: text!(location, "tiploc").ok(),
+                name: text!(string, location, "locationName")?,
+                crs: text!(string, location, "crs").ok(),
+                tiploc: text!(string, location, "tiploc").ok(),
             },
             associations: {
                 match child!(location, "associations").ok() {
@@ -203,7 +210,7 @@ impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
                         let mut vec = Vec::new();
 
                         for node in associations.children() {
-                            vec.push(Association::parse(node)?)
+                            vec.push(Association::parse(node, string)?)
                         }
 
                         Some(vec)
@@ -214,7 +221,7 @@ impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
                 .ok()
                 .and_then(|alert| todo!()),
             activities: {
-                match &*(text!(location, "activities")?) {
+                match &*(text!(string, location, "activities")?) {
                     "" => None,
                     activities => Some({
                         let mut ret: Vec<Activity> = Vec::new();
@@ -275,7 +282,7 @@ impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
                 }
             },
             length: {
-                match text!(location, "length")?.parse::<u16>() {
+                match text!(string, location, "length")?.parse::<u16>() {
                     Ok(x) => {
                         if x == 0 {
                             None
@@ -286,23 +293,25 @@ impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
                     Err(_) => None,
                 }
             },
-            detach_front: bool!(location, "detachFront", false)?,
-            operational: bool!(location, "isOperational", false)?,
-            pass: bool!(location, "isPass", false)?,
-            cancelled: bool!(location, "isCancelled", false)?,
-            false_destination: text!(location, "falseDest").ok().map(|name| Location {
-                name,
-                crs: None,
-                tiploc: text!(location, "fdTiploc").ok(),
-            }),
-            platform: text!(location, "platform")?.parse::<u8>().ok(),
-            platform_hidden: bool!(location, "platformIsHidden", false)?,
+            detach_front: bool!(string, location, "detachFront", false)?,
+            operational: bool!(string, location, "isOperational", false)?,
+            pass: bool!(string, location, "isPass", false)?,
+            cancelled: bool!(string, location, "isCancelled", false)?,
+            false_destination: text!(string, location, "falseDest")
+                .ok()
+                .map(|name| Location {
+                    name,
+                    crs: None,
+                    tiploc: text!(string, location, "fdTiploc").ok(),
+                }),
+            platform: text!(string, location, "platform")?.parse::<u8>().ok(),
+            platform_hidden: bool!(string, location, "platformIsHidden", false)?,
             // The docs make this misspelling. Is it a mistake? Who knows!
-            suppressed: bool!(location, "serviceIsSupressed", false)?,
+            suppressed: bool!(string, location, "serviceIsSupressed", false)?,
             arrival_time: {
-                match time!(location, "sta") {
+                match time!(string, location, "sta") {
                     Ok(sta) => {
-                        let forecast_type = match &*text!(location, "arrivalType")? {
+                        let forecast_type = match &*text!(string, location, "arrivalType")? {
                             "Actual" => ForecastType::Actual,
                             "Forecast" => ForecastType::Estimated,
                             x => return Err(ParsingError::InvalidForecast(x)),
@@ -311,20 +320,20 @@ impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
                         Some(ServiceTime {
                             scheduled: Some(sta),
                             time: match forecast_type {
-                                ForecastType::Actual => time!(location, "ata").ok(),
-                                ForecastType::Estimated => time!(location, "eta").ok(),
+                                ForecastType::Actual => time!(string, location, "ata").ok(),
+                                ForecastType::Estimated => time!(string, location, "eta").ok(),
                             },
                             forecast_type: Some(forecast_type),
-                            source: text!(location, "arrivalSource").ok(),
+                            source: text!(string, location, "arrivalSource").ok(),
                         })
                     }
                     Err(_) => None,
                 }
             },
             departure_time: {
-                match time!(location, "std") {
+                match time!(string, location, "std") {
                     Ok(std) => {
-                        let forecast_type = match &*text!(location, "departureType")? {
+                        let forecast_type = match &*text!(string, location, "departureType")? {
                             "Actual" => ForecastType::Actual,
                             "Forecast" => ForecastType::Estimated,
                             x => return Err(ParsingError::InvalidForecast(x)),
@@ -333,11 +342,11 @@ impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
                         Some(ServiceTime {
                             scheduled: Some(std),
                             time: match forecast_type {
-                                ForecastType::Actual => time!(location, "atd").ok(),
-                                ForecastType::Estimated => time!(location, "etd").ok(),
+                                ForecastType::Actual => time!(string, location, "atd").ok(),
+                                ForecastType::Estimated => time!(string, location, "etd").ok(),
                             },
                             forecast_type: Some(forecast_type),
-                            source: text!(location, "departureSource").ok(),
+                            source: text!(string, location, "departureSource").ok(),
                         })
                     }
                     Err(_) => None,
@@ -345,14 +354,14 @@ impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b> {
             },
 
             #[allow(deprecated)]
-            lateness: text!(location, "lateness").ok(),
+            lateness: text!(string, location, "lateness").ok(),
         })
     }
 }
 
 /// Details of a train service.
 #[derive(Debug)]
-pub struct ServiceDetails<'a, 'b> {
+pub struct ServiceDetails<'b> {
     /// The time these details were generated.
     pub generated_at: DateTime<FixedOffset>,
     /// A unique RTTI ID for this service that can be used to obtain full details of the service.
@@ -385,21 +394,17 @@ pub struct ServiceDetails<'a, 'b> {
     pub reverse_formation: bool,
     /// The list of the locations in this service's schedule.
     pub locations: Vec<ServiceLocation<'b>>,
-
-    source: &'b str,
-    tree: Document<'a>,
-    node: Node<'a, 'b>,
 }
 
-impl<'a, 'b> TryFrom<&'a str> for ServiceDetails<'a, 'b>
+impl<'a, 'b> TryFrom<&'a str> for ServiceDetails<'a>
 where
     'a: 'b,
 {
     type Error = ParsingError<'a>;
 
-    fn try_from(string: &'a str) -> Result<ServiceDetails<'a, 'b>, ParsingError<'a>> {
+    fn try_from(string: &'a str) -> Result<ServiceDetails<'a>, ParsingError<'a>> {
         let document =
-            Document::parse(string).map_err(|e| ParsingError::XMLParseError { source: e })?;
+            Document::parse(&*string).map_err(|e| ParsingError::XMLParseError { source: e })?;
 
         let details = document
             .root()
@@ -414,39 +419,36 @@ where
             });
         }
 
-        let typ = text!(details, "serviceType")?;
+        let typ = text!(string, details, "serviceType")?;
 
         if typ != "train" {
             return Err(ParsingError::UnsupportedServiceType(typ));
         }
 
         Ok(ServiceDetails {
-            generated_at: time!(details, "generatedAt")?,
-            rid: text!(details, "rid")?,
-            uid: text!(details, "uid")?,
-            rsid: text!(details, "rsid").ok(),
-            trainid: text!(details, "trainid")?,
-            sdd: date!(details, "sdd")?,
-            passenger_service: bool!(details, "isPassengerService", true)?,
-            charter: bool!(details, "isCharter", false)?,
-            category: text!(details, "category")?,
-            operator: text!(details, "operator")?,
-            operator_code: text!(details, "operatorCode")?,
-            cancel_reason: text!(details, "cancelReason").ok(),
-            delay_reason: text!(details, "delayReason").ok(),
-            reverse_formation: bool!(details, "isReverseFormation", false)?,
+            generated_at: time!(string, details, "generatedAt")?,
+            rid: text!(string, details, "rid")?,
+            uid: text!(string, details, "uid")?,
+            rsid: text!(string, details, "rsid").ok(),
+            trainid: text!(string, details, "trainid")?,
+            sdd: date!(string, details, "sdd")?,
+            passenger_service: bool!(string, details, "isPassengerService", true)?,
+            charter: bool!(string, details, "isCharter", false)?,
+            category: text!(string, details, "category")?,
+            operator: text!(string, details, "operator")?,
+            operator_code: text!(string, details, "operatorCode")?,
+            cancel_reason: text!(string, details, "cancelReason").ok(),
+            delay_reason: text!(string, details, "delayReason").ok(),
+            reverse_formation: bool!(string, details, "isReverseFormation", false)?,
             locations: {
                 let mut vec = Vec::new();
 
                 for node in child!(details, "locations")?.children() {
-                    vec.push(ServiceLocation::parse(node)?)
+                    vec.push(ServiceLocation::parse(node, string)?)
                 }
 
                 vec
             },
-            source: string,
-            tree: document,
-            node: details,
         })
     }
 }

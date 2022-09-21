@@ -1,6 +1,6 @@
-use crate::parsable::Parsable;
+use crate::parsable::{Parsable, ParsingError};
 use crate::services::Location;
-use crate::{bool, child, date, name, text, time, ParsingError};
+use crate::{bool, child, date, name, text, time};
 use chrono::NaiveDate;
 use roxmltree::Node;
 
@@ -42,8 +42,11 @@ pub struct Association<'a> {
     pub cancelled: bool,
 }
 
-impl<'a, 'b> Parsable<'a, 'b> for Association<'b> {
-    fn parse(association: Node<'a, 'b>) -> Result<Self, ParsingError<'b>> {
+impl<'a, 'b> Parsable<'a, 'b> for Association<'a>
+where
+    'a: 'b,
+{
+    fn parse(association: Node<'a, 'b>, string: &'a str) -> Result<Self, ParsingError<'b>> {
         if name!(association) != "association" {
             return Err(ParsingError::InvalidTagName {
                 expected: "association",
@@ -52,27 +55,27 @@ impl<'a, 'b> Parsable<'a, 'b> for Association<'b> {
         }
 
         Ok(Association {
-            category: match &*text!(association, "category")? {
+            category: match &*text!(string, association, "category")? {
                 "divide" => AssociationCategory::Divide,
                 "join" => AssociationCategory::Join,
                 x => return Err(ParsingError::InvalidAssociationCategory(x)),
             },
-            rid: text!(association, "rid")?,
-            uid: text!(association, "uid")?,
-            trainid: text!(association, "trainid")?,
-            rsid: text!(association, "rsid").ok(),
-            sdd: date!(association, "sdd")?,
+            rid: text!(string, association, "rid")?,
+            uid: text!(string, association, "uid")?,
+            trainid: text!(string, association, "trainid")?,
+            rsid: text!(string, association, "rsid").ok(),
+            sdd: date!(string, association, "sdd")?,
             origin: Some(Location {
-                name: text!(association, "origin")?,
-                crs: text!(association, "originCRS").ok(),
-                tiploc: text!(association, "originTiploc").ok(),
+                name: text!(string, association, "origin")?,
+                crs: text!(string, association, "originCRS").ok(),
+                tiploc: text!(string, association, "originTiploc").ok(),
             }),
             destination: Some(Location {
-                name: text!(association, "destination")?,
-                crs: text!(association, "destCRS").ok(),
-                tiploc: text!(association, "destTiploc").ok(),
+                name: text!(string, association, "destination")?,
+                crs: text!(string, association, "destCRS").ok(),
+                tiploc: text!(string, association, "destTiploc").ok(),
             }),
-            cancelled: bool!(association, "cancelled", false)?,
+            cancelled: bool!(string, association, "cancelled", false)?,
         })
     }
 }

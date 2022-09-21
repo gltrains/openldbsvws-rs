@@ -61,18 +61,34 @@ macro_rules! name {
 
 #[macro_export]
 macro_rules! text {
-    ($x: expr, $y: literal) => {
+    ($t: expr, $x: expr, $y: literal) => {
         $x.children()
             .find(|x| x.has_tag_name($y))
             .ok_or(ParsingError::MissingField($y))
-            .map(|x| x.text().unwrap_or(""))
+            .map(|x| {
+                // Oh roxmltree how I hate you oh so much
+                // First get the text node:
+                if let Some(text) = x.first_child() {
+                    if !text.is_text() {
+                        return "";
+                    }
+
+                    // Then get the range:
+                    let range = text.range();
+
+                    // Then map that range to the original string:
+                    &$t[range.start..range.end]
+                } else {
+                    ""
+                }
+            })
     };
 }
 
 #[macro_export]
 macro_rules! time {
-    ($x: expr, $y: literal) => {{
-        let text = text!($x, $y)?;
+    ($t: expr, $x: expr, $y: literal) => {{
+        let text = text!($t, $x, $y)?;
 
         DateTime::parse_from_rfc3339(text).map_err(|_| ParsingError::InvalidField {
             field: $y,
@@ -84,8 +100,8 @@ macro_rules! time {
 
 #[macro_export]
 macro_rules! date {
-    ($x: expr, $y: literal) => {{
-        let text = text!($x, $y)?;
+    ($t: expr, $x: expr, $y: literal) => {{
+        let text = text!($t, $x, $y)?;
 
         NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|_| ParsingError::InvalidField {
             field: $y,
@@ -97,8 +113,8 @@ macro_rules! date {
 
 #[macro_export]
 macro_rules! bool {
-    ($x: expr, $y: literal, $z: literal) => {
-        match text!($x, $y)? {
+    ($t: expr, $x: expr, $y: literal, $z: literal) => {
+        match text!($t, $x, $y)? {
             "true" => Ok(true),
             "false" => Ok(false),
             "" => Ok($z),
@@ -112,5 +128,5 @@ macro_rules! bool {
 }
 
 pub trait Parsable<'a, 'b>: Sized {
-    fn parse(from: Node<'a, 'b>) -> Result<Self, ParsingError<'b>>;
+    fn parse(from: Node<'a, 'b>, string: &'a str) -> Result<Self, ParsingError<'b>>;
 }
