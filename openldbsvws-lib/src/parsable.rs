@@ -6,13 +6,8 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum ParsingError<'a> {
     /// An invalid tag name.
-    #[error("invalid tag name, expected {expected:?}, got {found:?}")]
-    InvalidTagName {
-        /// The tag name that was expected.
-        expected: &'static str,
-        /// The tag name that was found.
-        found: &'a str,
-    },
+    #[error("invalid tag name, expected {0}")]
+    InvalidTagName(&'static str),
     /// An invalid activity. The string represents the activity that was found.
     #[error("invalid activity, got {0}")]
     InvalidActivity(&'a str),
@@ -24,12 +19,12 @@ pub enum ParsingError<'a> {
     InvalidAssociationCategory(&'a str),
     /// A missing field. The string represents the field that was not found.
     #[error("field {0} is missing")]
-    MissingField(&'a str),
+    MissingField(&'static str),
     /// An invalid field.
     #[error("field {field:?} couldn't be parsed, expected {expected:?}, got {found:?}")]
     InvalidField {
         /// The field name.
-        field: &'a str,
+        field: &'static str,
         /// What was expected. This is purely for diagnostic reasons.
         expected: &'static str,
         /// The contents of the field.
@@ -87,15 +82,18 @@ macro_rules! text {
 
 #[macro_export]
 macro_rules! time {
-    ($t: expr, $x: expr, $y: literal) => {{
-        let text = text!($t, $x, $y)?;
-
-        DateTime::parse_from_rfc3339(text).map_err(|_| ParsingError::InvalidField {
-            field: $y,
-            expected: "DateTime",
-            found: Some(text),
-        })
-    }};
+    ($t: expr, $x: expr, $y: literal) => {
+        match text!($t, $x, $y) {
+            Ok(text) => {
+                DateTime::parse_from_rfc3339(text).map_err(|_| ParsingError::InvalidField {
+                    field: $y,
+                    expected: "DateTime",
+                    found: Some(text),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    };
 }
 
 #[macro_export]
@@ -114,19 +112,31 @@ macro_rules! date {
 #[macro_export]
 macro_rules! bool {
     ($t: expr, $x: expr, $y: literal, $z: literal) => {
-        match text!($t, $x, $y)? {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            "" => Ok($z),
-            x => Err(ParsingError::InvalidField {
-                field: $y,
-                expected: "bool",
-                found: Some(x),
-            }),
+        match text!($t, $x, $y) {
+            Ok(x) => match x {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                "" => Ok($z),
+                x => Err(ParsingError::InvalidField {
+                    field: $y,
+                    expected: "bool",
+                    found: Some(x),
+                }),
+            },
+            Err(_) => Ok($z),
         }
     };
 }
 
-pub trait Parsable<'a, 'b>: Sized {
-    fn parse(from: Node<'a, 'b>, string: &'a str) -> Result<Self, ParsingError<'b>>;
+#[macro_export]
+macro_rules! parse {
+    ($t: expr, $x: expr, $y: literal, $z: ty) => {
+        text!($t, $x, $y)
+            .unwrap_or("")
+            .parse::<$z>()
+    }
+}
+
+pub trait Parsable<'a, 'b, 'c>: Sized {
+    fn parse(from: &Node<'a, 'b>, string: &'c str) -> Result<Self, ParsingError<'c>>;
 }

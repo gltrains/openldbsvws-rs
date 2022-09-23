@@ -1,12 +1,12 @@
-use crate::associations::Association;
-use crate::parsable::{Parsable, ParsingError};
-use crate::{bool, child, date, name, text, time};
+use std::iter::Iterator;
+use std::str::from_utf8;
+
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use roxmltree::{Document, Node};
-use std::borrow::{Borrow, Cow};
-use std::iter::Iterator;
-use std::mem;
-use std::str::{from_utf8, FromStr};
+
+use crate::associations::Association;
+use crate::parsable::{Parsable, ParsingError};
+use crate::{bool, child, date, name, parse, text, time};
 
 /// A location. At least one of CRS or TIPLOC is specified.
 #[derive(Debug, Clone)]
@@ -77,7 +77,7 @@ pub enum Activity {
     /// Notional activity to prevent WTT columns merge. (H)
     ///
     /// This can probably be safely treated as no activity.
-    NotionalActivity,
+    Notional,
     /// Notional activity to prevent WTT columns merge where 3rd column. (H)
     ///
     /// This can probably be safely treated as no activity.
@@ -119,7 +119,7 @@ pub enum Activity {
     /// Train finishes. (TF)
     TrainFinishes,
     /// Activity requested for TOPS reporting purposes. (TS)
-    ActivityRequestedForTOPS,
+    RequestedForTOPS,
     /// Stops or passes for tablet, staff or token. (TW)
     StopsOrPassesForTabletOrStaffOrToken,
     /// Stops to take up passengers. (U)
@@ -182,19 +182,13 @@ pub struct ServiceLocation<'a> {
     pub lateness: Option<&'a str>,
 }
 
-impl<'a, 'b> Parsable<'a, 'b> for ServiceLocation<'b>
-where
-    'a: 'b,
-{
+impl<'a, 'b> Parsable<'a, 'a, 'b> for ServiceLocation<'b> {
     fn parse(
-        location: Node<'a, 'b>,
-        string: &'a str,
+        location: &Node<'a, 'a>,
+        string: &'b str,
     ) -> Result<ServiceLocation<'b>, ParsingError<'b>> {
         if name!(location) != "location" {
-            return Err(ParsingError::InvalidTagName {
-                expected: "location",
-                found: name!(location),
-            });
+            return Err(ParsingError::InvalidTagName("location"));
         }
 
         Ok(ServiceLocation {
@@ -210,7 +204,7 @@ where
                         let mut vec = Vec::new();
 
                         for node in associations.children() {
-                            vec.push(Association::parse(node, string)?)
+                            vec.push(Association::parse(&node, string)?)
                         }
 
                         Some(vec)
@@ -221,7 +215,7 @@ where
                 .ok()
                 .and_then(|alert| todo!()),
             activities: {
-                match &*(text!(string, location, "activities")?) {
+                match text!(string, location, "activities")? {
                     "" => None,
                     activities => Some({
                         let mut ret: Vec<Activity> = Vec::new();
@@ -244,7 +238,7 @@ where
                                 "D" => Activity::StopsToSetDownPassengers,
                                 "E" => Activity::StopsForExamination,
                                 "G" => Activity::GBPRTTDataToAdd,
-                                "H" => Activity::NotionalActivity,
+                                "H" => Activity::Notional,
                                 "HH" => Activity::NotionalActivityThirdColumn,
                                 "K" => Activity::PassengerCountPoint,
                                 "KC" => Activity::TicketCollectionAndExaminationPoint,
@@ -263,7 +257,7 @@ where
                                 "T" => Activity::StopsToTakeUpAndSetDownPassengers,
                                 "TB" => Activity::TrainBegins,
                                 "TF" => Activity::TrainFinishes,
-                                "TS" => Activity::ActivityRequestedForTOPS,
+                                "TS" => Activity::RequestedForTOPS,
                                 "TW" => Activity::StopsOrPassesForTabletOrStaffOrToken,
                                 "U" => Activity::StopsToTakeUpPassengers,
                                 "W" => Activity::StopsForWateringOfCoaches,
@@ -282,7 +276,7 @@ where
                 }
             },
             length: {
-                match text!(string, location, "length")?.parse::<u16>() {
+                match parse!(string, location, "length", u16) {
                     Ok(x) => {
                         if x == 0 {
                             None
@@ -304,14 +298,14 @@ where
                     crs: None,
                     tiploc: text!(string, location, "fdTiploc").ok(),
                 }),
-            platform: text!(string, location, "platform")?.parse::<u8>().ok(),
+            platform: parse!(string, location, "platform", u8).ok(),
             platform_hidden: bool!(string, location, "platformIsHidden", false)?,
             // The docs make this misspelling. Is it a mistake? Who knows!
             suppressed: bool!(string, location, "serviceIsSupressed", false)?,
             arrival_time: {
                 match time!(string, location, "sta") {
                     Ok(sta) => {
-                        let forecast_type = match &*text!(string, location, "arrivalType")? {
+                        let forecast_type = match text!(string, location, "arrivalType")? {
                             "Actual" => ForecastType::Actual,
                             "Forecast" => ForecastType::Estimated,
                             x => return Err(ParsingError::InvalidForecast(x)),
@@ -333,7 +327,7 @@ where
             departure_time: {
                 match time!(string, location, "std") {
                     Ok(std) => {
-                        let forecast_type = match &*text!(string, location, "departureType")? {
+                        let forecast_type = match text!(string, location, "departureType")? {
                             "Actual" => ForecastType::Actual,
                             "Forecast" => ForecastType::Estimated,
                             x => return Err(ParsingError::InvalidForecast(x)),
@@ -404,19 +398,16 @@ where
 
     fn try_from(string: &'a str) -> Result<ServiceDetails<'a>, ParsingError<'a>> {
         let document =
-            Document::parse(&*string).map_err(|e| ParsingError::XMLParseError { source: e })?;
+            Document::parse(string).map_err(|e| ParsingError::XMLParseError { source: e })?;
 
         let details = document
             .root()
             .descendants()
             .find(|x| x.has_tag_name("GetServiceDetailsResult"))
-            .ok_or_else(|| ParsingError::MissingField("GetServiceDetailsResult"))?;
+            .ok_or(ParsingError::MissingField("GetServiceDetailsResult"))?;
 
         if name!(details) != "GetServiceDetailsResult" {
-            return Err(ParsingError::InvalidTagName {
-                expected: "GetServiceDetailsResult",
-                found: name!(details),
-            });
+            return Err(ParsingError::InvalidTagName("GetServiceDetailsResult"));
         }
 
         let typ = text!(string, details, "serviceType")?;
@@ -444,7 +435,7 @@ where
                 let mut vec = Vec::new();
 
                 for node in child!(details, "locations")?.children() {
-                    vec.push(ServiceLocation::parse(node, string)?)
+                    vec.push(ServiceLocation::parse(&node, string)?)
                 }
 
                 vec

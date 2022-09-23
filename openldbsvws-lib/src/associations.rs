@@ -1,8 +1,9 @@
+use chrono::NaiveDate;
+use roxmltree::Node;
+
 use crate::parsable::{Parsable, ParsingError};
 use crate::services::Location;
 use crate::{bool, child, date, name, text, time};
-use chrono::NaiveDate;
-use roxmltree::Node;
 
 /// Train association categories.
 #[derive(Debug, Clone)]
@@ -42,20 +43,14 @@ pub struct Association<'a> {
     pub cancelled: bool,
 }
 
-impl<'a, 'b> Parsable<'a, 'b> for Association<'a>
-where
-    'a: 'b,
-{
-    fn parse(association: Node<'a, 'b>, string: &'a str) -> Result<Self, ParsingError<'b>> {
+impl<'a, 'b> Parsable<'a, 'a, 'b> for Association<'b> {
+    fn parse(association: &Node<'a, 'a>, string: &'b str) -> Result<Self, ParsingError<'b>> {
         if name!(association) != "association" {
-            return Err(ParsingError::InvalidTagName {
-                expected: "association",
-                found: name!(association),
-            });
+            return Err(ParsingError::InvalidTagName("association"));
         }
 
         Ok(Association {
-            category: match &*text!(string, association, "category")? {
+            category: match text!(string, association, "category")? {
                 "divide" => AssociationCategory::Divide,
                 "join" => AssociationCategory::Join,
                 x => return Err(ParsingError::InvalidAssociationCategory(x)),

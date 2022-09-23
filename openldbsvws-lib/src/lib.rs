@@ -1,17 +1,16 @@
 #![feature(generic_associated_types)]
 
-mod associations;
-mod location;
-mod parsable;
-mod services;
-
-pub use services::ServiceDetails;
-
 #[cfg(feature = "reqwest")]
 use reqwest::Client;
-
 #[cfg(feature = "roxmltree")]
 use roxmltree::{Document, Node};
+
+pub use parsable::ParsingError;
+pub use services::ServiceDetails;
+
+mod associations;
+mod parsable;
+mod services;
 
 // Why are these macros and not consts?
 // For some reason, format! does not support
