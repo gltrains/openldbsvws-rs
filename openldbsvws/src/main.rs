@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Command;
 use reqwest::Client;
+use serde_json;
 use tokio::runtime::Builder;
 
 use openldbsvws_lib::{ParsingError, ServiceDetails};
@@ -24,7 +25,8 @@ fn main() -> Result<()> {
             Command::new("service")
                 .about("Gets information about a service")
                 .arg(clap::arg!(<SERVICE>).required(true))
-                .arg(clap::arg!(-t <TOKEN>).id("TOKEN").required(true)),
+                .arg(clap::arg!(-t <TOKEN>).id("TOKEN").required(true))
+                .arg(clap::arg!(--json).id("JSON").takes_value(false)),
         )
         .get_matches();
 
@@ -35,7 +37,8 @@ fn main() -> Result<()> {
         Some(("service", sub_matches)) => {
             let service = sub_matches.get_one::<String>("SERVICE").expect("required");
             let token = sub_matches.get_one::<String>("TOKEN").expect("required");
-            println!("Getting information for service {}", service);
+            let json = sub_matches.is_present("JSON");
+            eprintln!("Getting information for service {}", service);
 
             rt.block_on(async {
                 let service_details_payload =
@@ -58,7 +61,15 @@ fn main() -> Result<()> {
                     panic!();
                 }
 
-                println!("{:#?}", ServiceDetails::try_from(&*string));
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&ServiceDetails::try_from(&*string).unwrap())
+                            .unwrap()
+                    )
+                } else {
+                    println!("{:#?}", ServiceDetails::try_from(&*string));
+                }
             });
 
             Ok(())

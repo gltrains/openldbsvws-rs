@@ -1,10 +1,3 @@
-#![feature(generic_associated_types)]
-
-#[cfg(feature = "reqwest")]
-use reqwest::Client;
-#[cfg(feature = "roxmltree")]
-use roxmltree::{Document, Node};
-
 pub use parsable::ParsingError;
 pub use services::ServiceDetails;
 

@@ -3,12 +3,15 @@ use std::str::from_utf8;
 
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use roxmltree::{Document, Node};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::associations::Association;
 use crate::parsable::{Parsable, ParsingError};
 use crate::{bool, child, date, name, parse, text, time};
 
 /// A location. At least one of CRS or TIPLOC is specified.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Location<'a> {
     /// The location's name.
@@ -20,6 +23,7 @@ pub struct Location<'a> {
 }
 
 /// Forecast types.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub enum ForecastType {
     /// This time is the estimated time of arrival.
@@ -29,6 +33,7 @@ pub enum ForecastType {
 }
 
 /// A service time.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ServiceTime<'a> {
     /// The public scheduled time of arrival of this service at this location.
@@ -46,6 +51,7 @@ pub struct ServiceTime<'a> {
 ///
 /// See [Activity Codes](https://wiki.openraildata.com//index.php?title=Activity_codes) on the
 /// Open Rail Data Wiki.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Activity {
     /// Stops to detach vehicles. (-D)
@@ -135,6 +141,7 @@ pub enum Activity {
 }
 
 /// A location in this service's schedule. Not all locations are stopped at.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ServiceLocation<'a> {
     /// The location of this stop.
@@ -176,9 +183,6 @@ pub struct ServiceLocation<'a> {
     /// The lateness of this service, as given by the API. No guarantees are made about if this is
     /// parseable to an int, and sometimes it is blatantly wrong. Please calculate it yourself from
     /// the scheduled and actual times of the service.
-    #[deprecated(
-        note = "lateness is not guaranteed to be parseable to an int, please use scheduled/actual arrival and departure"
-    )]
     pub lateness: Option<&'a str>,
 }
 
@@ -354,6 +358,7 @@ impl<'a, 'b> Parsable<'a, 'a, 'b> for ServiceLocation<'b> {
 }
 
 /// Details of a train service.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct ServiceDetails<'b> {
     /// The time these details were generated.

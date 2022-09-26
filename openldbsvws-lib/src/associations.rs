@@ -1,26 +1,28 @@
 use chrono::NaiveDate;
 use roxmltree::Node;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::parsable::{Parsable, ParsingError};
 use crate::services::Location;
 use crate::{bool, child, date, name, text, time};
 
 /// Train association categories.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub enum AssociationCategory {
     /// A train joins this train.
     Join,
     /// A train divides from this train.
     Divide,
-    /// A train links from this train.
-    LinkedFrom,
-    /// A train links to this train.
-    LinkedTo,
+    /// Next.
+    Next,
 }
 
 /// A train association.
 ///
 /// A train can join, divide, link from and link to another train.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Association<'a> {
     /// The association category.
@@ -53,6 +55,7 @@ impl<'a, 'b> Parsable<'a, 'a, 'b> for Association<'b> {
             category: match text!(string, association, "category")? {
                 "divide" => AssociationCategory::Divide,
                 "join" => AssociationCategory::Join,
+                "next" => AssociationCategory::Next,
                 x => return Err(ParsingError::InvalidAssociationCategory(x)),
             },
             rid: text!(string, association, "rid")?,

@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.63"
 clap = "3.2.19"
-openldbsvws-lib = { path = "../openldbsvws-lib", features = ["reqwest", "roxmltree"]}
+openldbsvws-lib = { path = "../openldbsvws-lib", features = ["serde"] }
 reqwest = "0.11.11"
+serde_json = "1.0.85"
 tokio = "1.20.1"
