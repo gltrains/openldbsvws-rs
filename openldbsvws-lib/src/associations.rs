@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::parsable::{Parsable, ParsingError};
 use crate::services::Location;
-use crate::{bool, child, date, name, text, time};
+use crate::{bool, date, name, text};
 
 /// Train association categories.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

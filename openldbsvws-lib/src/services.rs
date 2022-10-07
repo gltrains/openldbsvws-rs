@@ -1,14 +1,22 @@
 use std::iter::Iterator;
 use std::str::from_utf8;
 
-use chrono::{DateTime, FixedOffset, NaiveDate};
+#[cfg(feature = "pretty")]
+use ansi_term::{ANSIString, ANSIStrings, Colour::Fixed, Style};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate};
 use roxmltree::{Document, Node};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::associations::Association;
 use crate::parsable::{Parsable, ParsingError};
+#[cfg(feature = "pretty")]
+use crate::prettyprint::PrettyPrintable;
 use crate::{bool, child, date, name, parse, text, time};
+
+mod private {
+    pub trait Sealed {}
+}
 
 /// A location. At least one of CRS or TIPLOC is specified.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -30,21 +38,97 @@ pub enum ForecastType {
     Estimated,
     /// This time is the actual time of arrival.
     Actual,
+    /// NoReport means Darwin doesn’t know whether the service has passed through this location or not.
+    /// Occurs after all information available to Darwin indicates the service should have passed through this location
+    /// but no positive data has been received to confirm the movement. Takes precedence over any estimated times for
+    /// public display.
+    NoLog,
+    /// NoLog means Darwin knows the service has passed through this location but it hasn’t received any movement
+    /// reports for that service at that location. Occurs after a movement report is received at a subsequent location
+    /// in the service’s schedule, converting NoReport to NoLog.
+    NoReport,
+    /// Delayed means that the service has an unknown delay (usually related to a train not moving) so any estimated
+    /// times are uncertain and should be hidden from public display.
+    Delayed,
+}
+
+/// This enum is returned by `ServiceTime::lateness`.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
+pub enum UserLateness {
+    /// If the service is early, this is returned. Note that the duration will be negative.
+    ///
+    /// A service which is early by a minute or less is considered "on time". See `OnTime`.
+    Early(Duration),
+    /// If the service is on time, this is returned.
+    /// Note that the duration can be negative.
+    ///
+    /// A delay or earliness of a minute or less is interpreted as "on time". This is to prevent services being marked
+    /// as "late" due to signalling systems rounding the time to the nearest minute.
+    ///
+    /// For example, a service with a scheduled arrival of 15:00 and an actual arrival of 14:59 has "arrived on time",
+    /// rather than being "1 minute early".
+    OnTime(Duration),
+    /// If the service is late, this is returned. The duration cannot be negative.
+    ///
+    /// A service which is late by a minute or less is considered "on time". See `OnTime`.
+    Late(Duration)
+}
+
+/// The lateness trait provides the `lateness()` function for ServiceTime and nothing else.
+/// This trait is sealed.
+pub trait Lateness: private::Sealed {
+    fn lateness(&self) -> UserLateness {};
 }
 
 /// A service time.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ServiceTime<'a> {
-    /// The public scheduled time of arrival of this service at this location.
-    pub scheduled: Option<DateTime<FixedOffset>>,
-    /// The time of arrival for this service at this location. If `forecast_type` is
-    /// Estimated, this is an ETA. If `forecast_type` is Actual, this is an ATA.
-    pub time: Option<DateTime<FixedOffset>>,
-    /// Whether the time is estimated or actual.
-    pub forecast_type: Option<ForecastType>,
-    /// The source of the time.
-    pub source: Option<&'a str>,
+    /// The public scheduled time of arrival of this service at this location. This may be missing if this location is
+    /// the service's origin.
+    pub scheduled_arrival: Option<DateTime<FixedOffset>>,
+    /// The public scheduled time of departure of this service at this location. This may be missing if this location is
+    /// the service's final destination.
+    pub scheduled_departure: Option<DateTime<FixedOffset>>,
+    /// The time of arrival for this service at this location. Depending on `ForecastType`, this is either:
+    /// - Estimated: a forecast (corresponds to `eta`)
+    /// - Actual: the actual time this train arrived (corresponds to `ata`)
+    /// - NoLog, NoReport: missing
+    ///
+    /// Scheduled arrival may be missing if this location is the service’s origin location or if the service
+    /// is 'pick up only' (`activities` contains `StopsToTakeUpPassengers`) at this location.
+    pub arrival: Option<DateTime<FixedOffset>>,
+    /// The time of departure for this service at this location. Depending on `ForecastType`, this is either:
+    /// - Estimated: a forecast (corresponds to `etd`)
+    /// - Actual: the actual time this train has departed (corresponds to `atd`)
+    /// - NoLog, NoReport: missing
+    ///
+    /// Scheduled departure may be missing if this location is the service's final destination or if the service
+    /// is 'set down only' (`activities` contains `StopsToSetDownPassengers`) at this location.
+    pub departure: Option<DateTime<FixedOffset>>,
+    /// The forecast type of this location. See `arrival` and `departure`. This may be missing if this location is the
+    /// service's origin.
+    ///
+    /// This field corresponds to `arrivalType`.
+    pub arrival_forecast_type: Option<ForecastType>,
+    /// The departure forecast type of this location. See `arrival` and `departure`. This may be missing if this
+    /// location is the service's final destination.
+    ///
+    /// This field corresponds to `departureType`.
+    pub departure_forecast_type: Option<ForecastType>,
+    /// The arrival time source of this location. This is the internal service (usually "TRUST" or "Darwin") that
+    /// provided the information.
+    pub arrival_source: Option<&'a str>,
+    /// The arrival time source instance of this location. These map to codes that can be retrieved through
+    /// `GetSourceInstanceNames`. todo! implement GetSourceInstanceNames
+    pub arrival_source_instance: Option<&'a str>,
+    /// The departure time source of this location. This is the internal service (usually "TRUST" or "Darwin") that
+    /// provided the information.
+    pub departure_source: Option<&'a str>,
+    /// The departure time source instance of this location. These map to codes that can be retrieved through
+    /// `GetSourceInstanceNames`. todo! implement GetSourceInstanceNames
+    pub departure_source_instance: Option<&'a str>,
 }
 
 /// Activity codes.
@@ -148,7 +232,8 @@ pub struct ServiceLocation<'a> {
     pub location: Location<'a>,
     /// Associations that happen at this stop.
     pub associations: Option<Vec<Association<'a>>>,
-    /// Ad-hoc alerts about this stop.
+    /// Ad-hoc alerts about this stop. Relatively rare, normally reserved for significant and out of the ordinary events
+    /// not well covered by other, more normal, disruption message options.
     pub adhoc_alerts: Option<Vec<&'a str>>,
     /// Activities that happen at this stop.
     pub activities: Option<Vec<Activity>>,
@@ -159,14 +244,25 @@ pub struct ServiceLocation<'a> {
     /// If true, this is an operational calling location. Arrival and departure times will be
     /// working times, rather than the usual public times.
     pub operational: bool,
-    /// If true, the train passes at this location. No arrival times will be specified and the
-    /// departure times should be interpreted as working pass times.
+    /// If true, the train passes (does not stop) at this location. No arrival times will be specified and the
+    /// departure times should be interpreted as working pass times. You must not imply that a passing location will
+    /// be stopped at, but you may display this to, for example, indicate the progress of a service.
+    ///
+    /// For example, a service may call at Kings Cross, York and Glasgow and pass through Peterborough, Grantham and
+    /// Darlington along the way. Peterborough, Grantham and Darlington must not be shown on any list of calling points
+    /// for this service but it is permissible, for example, to indicate whether this service has passed Peterborough
+    /// on time.
     pub pass: bool,
     /// If true, the service is cancelled at this location. No ETA or ETD will be provided, but an
     /// ATA or an ATD may be present.
     pub cancelled: bool,
     /// A false destination that should be displayed for this location. False destinations should be
-    /// shown to the public.
+    /// shown to the public, but are optional. False destinations help passengers choose the right option.
+    ///
+    /// For example, a London Paddington to Reading local service may have a false destination at Paddington of
+    /// Twyford. This is to encourage passengers at Paddington to catch the faster intercity services to Reading,
+    /// leaving the local service free to carry passengers between Paddington and Twyford. Locations after
+    /// Paddington will show the true destination of Reading for the local service.
     pub false_destination: Option<Location<'a>>,
     /// The platform number that the service is expected to use at this location. If None, the
     /// platform is not known.
@@ -176,13 +272,10 @@ pub struct ServiceLocation<'a> {
     /// If true, the service has been suppressed at this location and will not be displayed at the
     /// station.
     pub suppressed: bool,
-    /// The arrival time of this service.
-    pub arrival_time: Option<ServiceTime<'a>>,
-    /// The departure time of this service.
-    pub departure_time: Option<ServiceTime<'a>>,
-    /// The lateness of this service, as given by the API. No guarantees are made about if this is
-    /// parseable to an int, and sometimes it is blatantly wrong. Please calculate it yourself from
-    /// the scheduled and actual times of the service.
+    /// The arrival and departure time of this service.
+    pub time: ServiceTime<'a>,
+    /// The number of seconds that this train is late. Note that this may contain text. You should use
+    /// `ServiceTime::lateness` instead.
     pub lateness: Option<&'a str>,
 }
 
@@ -306,55 +399,89 @@ impl<'a, 'b> Parsable<'a, 'a, 'b> for ServiceLocation<'b> {
             platform_hidden: bool!(string, location, "platformIsHidden", false)?,
             // The docs make this misspelling. Is it a mistake? Who knows!
             suppressed: bool!(string, location, "serviceIsSupressed", false)?,
-            arrival_time: {
-                match time!(string, location, "sta") {
-                    Ok(sta) => {
-                        let forecast_type = match text!(string, location, "arrivalType")? {
-                            "Actual" => ForecastType::Actual,
-                            "Forecast" => ForecastType::Estimated,
-                            x => return Err(ParsingError::InvalidForecast(x)),
-                        };
+            time: {
+                let arrival_forecast_type: Option<ForecastType> = match text!(string, location, "arrivalType") {
+                    Ok(typ) => match typ {
+                        "Forecast" => Some(ForecastType::Forecast),
+                        "Actual" => Some(ForecastType::Actual),
+                        "NoLog" => Some(ForecastType::NoLog),
+                        "NoReport" => Some(ForecastType::NoReport),
+                        "Delayed" => Some(ForecastType::Delayed),
 
-                        Some(ServiceTime {
-                            scheduled: Some(sta),
-                            time: match forecast_type {
-                                ForecastType::Actual => time!(string, location, "ata").ok(),
+                        _ => Err(ParsingError::InvalidForecast(typ))?
+                    },
+                    Err(_) => None
+                };
+
+                let departure_forecast_type: Option<ForecastType> = match text!(string, location, "departureType") {
+                    Ok(typ) => match typ {
+                        "Forecast" => Some(ForecastType::Forecast),
+                        "Actual" => Some(ForecastType::Actual),
+                        "NoLog" => Some(ForecastType::NoLog),
+                        "NoReport" => Some(ForecastType::NoReport),
+                        "Delayed" => Some(ForecastType::Delayed),
+
+                        _ => Err(ParsingError::InvalidForecast(typ))?
+                    },
+                    Err(_) => None
+                };
+
+                Ok(ServiceTime {
+                    scheduled_arrival: time!(string, location, "sta").ok(),
+                    scheduled_departure: time!(string, location, "std").ok(),
+                    arrival: {
+                        match arrival_forecast_type {
+                            Some(typ) => match typ {
                                 ForecastType::Estimated => time!(string, location, "eta").ok(),
+                                ForecastType::Actual => time!(string, location, "ata").ok(),
+                                ForecastType::NoLog => None,
+                                ForecastType::NoReport => None,
+                                ForecastType::Delayed => time!(string, location, "eta").ok(),
                             },
-                            forecast_type: Some(forecast_type),
-                            source: text!(string, location, "arrivalSource").ok(),
-                        })
-                    }
-                    Err(_) => None,
-                }
-            },
-            departure_time: {
-                match time!(string, location, "std") {
-                    Ok(std) => {
-                        let forecast_type = match text!(string, location, "departureType")? {
-                            "Actual" => ForecastType::Actual,
-                            "Forecast" => ForecastType::Estimated,
-                            x => return Err(ParsingError::InvalidForecast(x)),
-                        };
-
-                        Some(ServiceTime {
-                            scheduled: Some(std),
-                            time: match forecast_type {
-                                ForecastType::Actual => time!(string, location, "atd").ok(),
-                                ForecastType::Estimated => time!(string, location, "etd").ok(),
-                            },
-                            forecast_type: Some(forecast_type),
-                            source: text!(string, location, "departureSource").ok(),
-                        })
-                    }
-                    Err(_) => None,
-                }
-            },
+                            None => None,
+                        }
+                    },
+                    departure: None,
+                    arrival_forecast_type,
+                    departure_forecast_type,
+                    arrival_source: None,
+                    arrival_source_instance: None,
+                    departure_source: None,
+                    departure_source_instance: None
+                })
+            }?,
 
             #[allow(deprecated)]
             lateness: text!(string, location, "lateness").ok(),
-        })
+        }
     }
+}
+
+const GREY: u8 = 247;
+const PASSED: u8 = 81;
+const LIGHT_PASSED: u8 = 195;
+const HERE: u8 = 155;
+const LIGHT_HERE: u8 = 193;
+const LATE: u8 = 220;
+const LIGHT_LATE: u8 = 230;
+const CANCELLED: u8 = 203;
+const LIGHT_CANCELLED: u8 = 218;
+const SCHEDULED: u8 = 183;
+const LIGHT_SCHEDULED: u8 = 225;
+
+const INDENT: &str = "    ";
+const CIRCLE: &str = "●";
+const LINE: &str = "│";
+const ARROW: &str = "⟶";
+const ARROW_LEFT: &str = "⟵";
+const CROSS: &str = "⨯";
+const DOTTED_CIRCLE: &str = "◯";
+const SEMI_CIRCLE_1: &str = "◔";
+const SEMI_CIRCLE_3: &str = "◕";
+
+#[cfg(feature = "pretty")]
+impl<'a> PrettyPrintable for ServiceLocation<'a> {
+    fn pretty(&self) -> String {}
 }
 
 /// Details of a train service.
@@ -446,5 +573,109 @@ where
                 vec
             },
         })
+    }
+}
+
+const PURPLE: u8 = 140;
+
+#[cfg(feature = "pretty")]
+impl<'a> PrettyPrintable for ServiceDetails<'a> {
+    fn pretty(&self) -> String {
+        let strings: &[ANSIString<'a>] = &[
+            Style::default().paint("Service "),
+            Style::default().bold().paint(self.rid),
+            Fixed(GREY).paint("\nTSDB "),
+            Fixed(GREY).bold().paint(self.uid),
+            Fixed(GREY).paint("\nRSID "),
+            Fixed(GREY).bold().paint(self.rsid.unwrap_or("unknown")),
+            Fixed(GREY).paint("\nHeadcode "),
+            Fixed(GREY).bold().paint(self.trainid),
+            Fixed(GREY).paint("\nDeparts "),
+            Fixed(PURPLE).bold().paint(self.sdd.to_string()),
+            Fixed(GREY).paint("\nType "),
+            Fixed(PURPLE).bold().paint(match self.category {
+                // https://wiki.openraildata.com/index.php?title=CIF_Codes
+                "OL" => "London Underground/Metro Service",
+                "OU" => "Unadvertised Ordinary Passenger",
+                "OO" => "Ordinary Passenger",
+                "OS" => "Staff Train",
+
+                "XC" => "Channel Tunnel",
+                "XD" => "Sleeper",
+                "XI" => "International",
+                "XR" => "Motorail",
+                "XU" => "Unadvertised Express",
+                "XX" => "Express Passenger",
+                "XZ" => "Sleeper (Domestic)",
+
+                "BR" => "Rail replacement bus",
+                "BS" => "Bus",
+                "SS" => "Ship",
+
+                "EE" => "Empty Coaching Stock (ECS)",
+                "EL" => "ECS, London Underground/Metro Service",
+                "ES" => "ECS and Staff",
+
+                "JJ" => "Postal",
+                "PM" => "Post Office Controlled Parcels",
+                "PP" => "Parcels",
+                "PV" => "Empty NPCCS",
+
+                "DD" => "Departmental",
+                "DH" => "Civil Engineer",
+                "DI" => "Mechanical & Electrical Engineer",
+                "DQ" => "Stores",
+                "DT" => "Test",
+                "DY" => "Signal & Telecommunications Engineer",
+
+                "ZB" => "Locomotive & Brake Van",
+                "ZZ" => "Light Locomotive",
+
+                "J2" => "RfD Automotive (Components)",
+                "H2" => "RfD Automotive (Vehicles)",
+                "J3" => "RfD Edible Products (UK Contracts)",
+                "J4" => "RfD Industrial Minerals (UK Contracts)",
+                "J5" => "RfD Chemicals (UK Contracts)",
+                "J6" => "RfD Building Materials (UK Contracts)",
+                "J8" => "RfD General Merchandise (UK Contracts)",
+                "H8" => "RfD European",
+                "J9" => "RfD Freightliner (Contracts)",
+                "H9" => "RfD Freightliner (Other)",
+
+                "A0" => "Coal (Distributive)",
+                "E0" => "Coal (Electricity) MGR",
+                "B0" => "Coal (Other) and Nuclear",
+                "B1" => "Metals",
+                "B4" => "Aggregates",
+                "B5" => "Domestic and Industrial Waste",
+                "B6" => "Building Materials (TLF)",
+                "B7" => "Petroleum Products",
+
+                "H0" => "RfD European Channel Tunnel (Mixed Business)",
+                "H1" => "RfD European Channel Tunnel Intermodal",
+                "H3" => "RfD European Channel Tunnel Automotive",
+                "H4" => "RfD European Channel Tunnel Contract Services",
+                "H5" => "RfD European Channel Tunnel Haulmark",
+                "H6" => "RfD European Channel Tunnel Joint Venture",
+
+                &_ => "unknown",
+            }),
+            Fixed(GREY).paint(format!(" ({})", self.category)),
+            Fixed(GREY).paint("\nOperated by "),
+            Fixed(PURPLE).bold().paint(self.operator),
+            Fixed(GREY).paint(format!(" ({})", self.operator_code)),
+            Style::default().paint("\n\n"),
+        ];
+
+        let mut map = String::new();
+
+        for location in &self.locations {
+            map.push_str(&location.pretty())
+        }
+
+        let mut ret = ANSIStrings(strings).to_string();
+        ret.push_str(&map);
+
+        ret
     }
 }

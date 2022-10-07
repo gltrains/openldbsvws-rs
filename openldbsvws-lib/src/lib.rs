@@ -1,9 +1,15 @@
 pub use parsable::ParsingError;
 pub use services::ServiceDetails;
 
+#[cfg(feature = "pretty")]
+pub use prettyprint::PrettyPrintable;
+
 mod associations;
 mod parsable;
 mod services;
+
+#[cfg(feature = "pretty")]
+mod prettyprint;
 
 // Why are these macros and not consts?
 // For some reason, format! does not support

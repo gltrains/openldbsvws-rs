@@ -12,7 +12,7 @@ pub enum ParsingError<'a> {
     #[error("invalid activity, got {0}")]
     InvalidActivity(&'a str),
     /// An invalid forecast type. The string represents the forecast type that was found.
-    #[error("invalid forecast type, expected Actual or Forecast, got {0}")]
+    #[error("invalid forecast type, got {0}")]
     InvalidForecast(&'a str),
     /// An invalid association category type. The string represents the category that was found.
     #[error("invalid association category, expected Join or Divide, got {0}")]
@@ -131,10 +131,8 @@ macro_rules! bool {
 #[macro_export]
 macro_rules! parse {
     ($t: expr, $x: expr, $y: literal, $z: ty) => {
-        text!($t, $x, $y)
-            .unwrap_or("")
-            .parse::<$z>()
-    }
+        text!($t, $x, $y).unwrap_or("").parse::<$z>()
+    };
 }
 
 pub trait Parsable<'a, 'b, 'c>: Sized {

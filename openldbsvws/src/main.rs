@@ -1,12 +1,11 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Command;
 use reqwest::Client;
-use serde_json;
 use tokio::runtime::Builder;
 
-use openldbsvws_lib::{ParsingError, ServiceDetails};
+use openldbsvws_lib::{PrettyPrintable, ServiceDetails};
 
 macro_rules! service_details {
     () => {"<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:typ=\"http://thalesgroup.com/RTTI/2013-11-28/Token/types\" xmlns:ldb=\"http://thalesgroup.com/RTTI/2021-11-01/ldbsv/\"><soapenv:Header><typ:AccessToken><typ:TokenValue>{token}</typ:TokenValue></typ:AccessToken></soapenv:Header><soapenv:Body><ldb:GetServiceDetailsByRIDRequest><ldb:rid>{rid}</ldb:rid></ldb:GetServiceDetailsByRIDRequest></soapenv:Body></soapenv:Envelope>"}
@@ -38,7 +37,6 @@ fn main() -> Result<()> {
             let service = sub_matches.get_one::<String>("SERVICE").expect("required");
             let token = sub_matches.get_one::<String>("TOKEN").expect("required");
             let json = sub_matches.is_present("JSON");
-            eprintln!("Getting information for service {}", service);
 
             rt.block_on(async {
                 let service_details_payload =
@@ -68,7 +66,7 @@ fn main() -> Result<()> {
                             .unwrap()
                     )
                 } else {
-                    println!("{:#?}", ServiceDetails::try_from(&*string));
+                    println!("{}", ServiceDetails::try_from(&*string).unwrap().pretty());
                 }
             });
 

@@ -22,3 +22,5 @@ openldbsvws service -t <token> <rid>
 
 Right now, you can only fetch service details.
 More features are being implemented soon.
+
+![Powered by National Rail Enquiries](powered_by_nre.png)
