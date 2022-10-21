@@ -44,8 +44,8 @@ pub struct Association<'a> {
     pub cancelled: bool,
 }
 
-impl<'a> Parsable<'a> for Association<'a> {
-    fn parse(association: &'a Node<'a, '_>) -> Result<Self, ParsingError<'a>> {
+impl<'a, 'b> Parsable<'a, 'a, 'b> for Association<'b> {
+    fn parse(association: &Node<'a, 'a>, string: &'b str) -> Result<Self, ParsingError<'b>> {
         if association.name() != "association" {
             return Err(ParsingError::InvalidTagName("association"));
         }
@@ -57,22 +57,22 @@ impl<'a> Parsable<'a> for Association<'a> {
                 "next" => AssociationCategory::Next,
                 x => return Err(ParsingError::InvalidAssociationCategory(x)),
             },
-            rid: Traversable::text(&association.child("rid")?)?,
-            uid: Traversable::text(&association.child("uid")?)?,
-            trainid: Traversable::text(&association.child("trainid")?)?,
-            rsid: Traversable::text(&association.child("rsid")?).ok(),
-            sdd: association.child("sdd")?.date()?,
+            rid: text!(string, association, "rid")?,
+            uid: text!(string, association, "uid")?,
+            trainid: text!(string, association, "trainid")?,
+            rsid: text!(string, association, "rsid").ok(),
+            sdd: date!(string, association, "sdd")?,
             origin: Some(Location {
-                name: Traversable::text(&association.child("origin")?)?,
-                crs: Traversable::text(&association.child("originCRS")?).ok(),
-                tiploc: Traversable::text(&association.child("originTiploc")?).ok(),
+                name: text!(string, association, "origin")?,
+                crs: text!(string, association, "originCRS").ok(),
+                tiploc: text!(string, association, "originTiploc").ok(),
             }),
             destination: Some(Location {
-                name: Traversable::text(&association.child("destination")?)?,
-                crs: Traversable::text(&association.child("destCRS")?).ok(),
-                tiploc: Traversable::text(&association.child("destTiploc")?).ok(),
+                name: text!(string, association, "destination")?,
+                crs: text!(string, association, "destCRS").ok(),
+                tiploc: text!(string, association, "destTiploc").ok(),
             }),
-            cancelled: association.child("cancelled")?.bool(false),
+            cancelled: bool!(string, association, "cancelled", false)?,
         })
     }
 }

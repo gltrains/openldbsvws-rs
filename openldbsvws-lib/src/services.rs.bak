@@ -292,10 +292,11 @@ pub struct ServiceLocation<'a> {
     pub lateness: Option<&'a str>,
 }
 
-impl<'a> Parsable<'a> for ServiceLocation<'a> {
+impl<'a, 'b> Parsable<'a, 'a, 'b> for ServiceLocation<'b> {
     fn parse(
-        location: &'a Node<'a, '_>,
-    ) -> Result<ServiceLocation<'a>, ParsingError<'a>> {
+        location: &Node<'a, 'a>,
+        string: &'b str,
+    ) -> Result<ServiceLocation<'b>, ParsingError<'b>> {
         if location.name() != "location" {
             return Err(ParsingError::InvalidTagName("location"));
         }
@@ -312,7 +313,7 @@ impl<'a> Parsable<'a> for ServiceLocation<'a> {
                         let mut vec = Vec::new();
 
                         for node in associations.children() {
-                            vec.push(Association::parse(&node)?)
+                            vec.push(Association::parse(&node, string)?)
                         }
 
                         Ok(vec)
@@ -396,10 +397,10 @@ impl<'a> Parsable<'a> for ServiceLocation<'a> {
                     Err(_) => None,
                 }
             },
-            detach_front: location.child("detachFront")?.bool(false),
-            operational: location.child("isOperational")?.bool(false),
-            pass: location.child("isPass")?.bool(false),
-            cancelled: location.child("isCancelled")?.bool(false),
+            detach_front: location.child("detachFront")?.bool(false)?,
+            operational: location.child("isOperational")?.bool(false)?,
+            pass: location.child("isPass")?.bool(false)?,
+            cancelled: location.child("isCancelled")?.bool(false)?,
             false_destination: location.child("falseDest")
                 .map(|node| Location {
                     name: Traversable::text(&node).unwrap_or_default(),
@@ -411,9 +412,9 @@ impl<'a> Parsable<'a> for ServiceLocation<'a> {
                 })
                 .ok(),
             platform: location.child("platform")?.parse::<u8>().ok(),
-            platform_hidden: location.child("platformIsHidden")?.bool(false),
+            platform_hidden: location.child("platformIsHidden")?.bool(false)?,
             // The docs make this misspelling. Is it a mistake? Who knows!
-            suppressed: location.child("serviceIsSupressed")?.bool(false),
+            suppressed: location.child("serviceIsSupressed")?.bool(false)?,
             time: {
                 let arrival_forecast_type: Option<ForecastType> =
                     match Traversable::text(&location.child("arrivalType")?) {
@@ -498,9 +499,7 @@ const SEMI_CIRCLE_3: &str = "◕";
 
 #[cfg(feature = "pretty")]
 impl<'a> PrettyPrintable for ServiceLocation<'a> {
-    fn pretty(&self) -> String {
-        todo!()
-    }
+    fn pretty(&self) -> String {}
 }
 
 /// Details of a train service.
@@ -574,19 +573,19 @@ where
             rsid: Traversable::text(&details.child("rsid")?).ok(),
             trainid: Traversable::text(&details.child("trainid")?)?,
             sdd: details.child("sdd")?.date()?,
-            passenger_service: details.child("isPassengerService")?.bool(true),
-            charter: details.child("isCharter")?.bool(false),
+            passenger_service: details.child("isPassengerService")?.bool(true)?,
+            charter: details.child("isCharter")?.bool(false)?,
             category: Traversable::text(&details.child("category")?)?,
             operator: Traversable::text(&details.child("operator")?)?,
             operator_code: Traversable::text(&details.child("operatorCode")?)?,
             cancel_reason: Traversable::text(&details.child("cancelReason")?).ok(),
             delay_reason: Traversable::text(&details.child("delayReason")?).ok(),
-            reverse_formation: details.child("isReverseFormation")?.bool(false),
+            reverse_formation: details.child("isReverseFormation")?.bool(false)?,
             locations: {
                 let mut vec = Vec::new();
 
                 for node in details.child("locations")?.children() {
-                    vec.push(ServiceLocation::parse(&node)?)
+                    vec.push(ServiceLocation::parse(&node, string)?)
                 }
 
                 vec

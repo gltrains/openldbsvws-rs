@@ -1,3 +1,5 @@
+#![feature(result_flattening)]
+
 pub use parsable::ParsingError;
 pub use services::ServiceDetails;
 
